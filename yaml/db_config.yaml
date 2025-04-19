@@ -1,0 +1,10 @@
+database:
+  name: feniqs
+  user: feniqs_user
+  host: localhost
+  password: nopassword
+
+paths:
+  table_name: public.benchmark
+  file_path: db/timescale_benchmarks.sql
+

@@ -1,0 +1,36 @@
+backends:
+  QiskitAerCpu:
+    params:
+      matrix_product_state_max_bond_dimension: [4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048]
+      mps_lapack: [0, 1]
+      opt_level: [1, 2, 3]
+      matrix_product_state_truncation_threshold: [1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]
+      mps_sample_measure_algorithm: ["mps_probabilities", "mps_apply_measure"]
+    optimization_params: ["matrix_product_state_max_bond_dimension", "mps_lapack", "opt_level", "matrix_product_state_truncation_threshold", "mps_sample_measure_algorithm"]
+  QmatchateaCpu:
+    params:
+      max_bond_dimension: [4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 3072]
+      linearize_enable: [0, 1]
+      optimization_level: [0, 1, 2]
+      tensor_compilator_enable: [0, 1]    
+    optimization_params: ["max_bond_dimension", "linearize_enable", "optimization_level", "tensor_compilator_enable"]
+  QuimbMpsCpu:
+    params:
+      bonddim: [4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 3072]
+      gate_contract: ["auto-mps", "swap+split"]
+      cutoff: [1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]
+      permute: [0, 1] 
+    optimization_params: ["bonddim", "gate_contract", "cutoff", "permute"]
+  MimiqJuliaCpu:
+    params:
+      bond_dimension: [4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 3072]
+      entdim: [4, 8, 16]
+      opt_level: [0, 1]
+      scut: [1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]
+      meth: ["mpo1z", "zipup"]
+    optimization_params: ["bond_dimension", "entdim", "opt_level", "targerr", "meth"]
+
+
+    
+
+

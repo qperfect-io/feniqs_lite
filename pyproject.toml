@@ -1,0 +1,95 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "feniqs_lite"
+description = "FENIQS: Quantum Simulator Benchmarking Framework"
+dynamic = ["version"]
+requires-python = ">=3.10"
+dependencies = [
+    "gevent >=22.10.2",
+    "flask >=2.0.0",
+    "Werkzeug >=2.0.0",
+    "requests >=2.26.0",
+    "msgpack >=1.0.0",
+    "pyzmq >=25.0.0",
+    "geventhttpclient >=2.0.11",
+    "ConfigArgParse >=1.5.5",
+    "tomli >=1.1.0; python_version<'3.11'",
+    "psutil >=5.9.1",
+    "Flask-Login >=0.6.3",
+    "Flask-Cors >=3.0.10",
+    "roundrobin >=0.0.2",
+    "colorlog >=6.7.0",
+    "watchdog",
+    "pluggy",
+    "PyYAML",
+    "cma",
+    "pymoo",
+    "moarchiving",
+    "setproctitle",
+    "python-daemon",
+    "gevent",
+    "psycopg2",
+    "pywin32; platform_system=='Windows'",
+]
+classifiers = [
+    "Topic :: Quantum Simulators Benchmarks :: Profiling :: Performance Testing",
+    "Development Status :: 3 - Development/Stable",
+    "License :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Intended Audience :: Quanatum Computing Community",
+]
+
+[project.urls]
+
+
+
+[project.readme]
+file = "README.md"
+content-type = "text/markdown"
+
+[tools.setuptools]
+zip-safe = false
+include-package-data = true
+
+[tools.ruff]
+target-version = "py38"
+line-length = 120
+extend-exclude = [
+    "build",   	
+]
+
+[tool.ruff.lint.per-file-ignores]
+"examples/*" = ["F841"]
+
+[tool.ruff.lint.isort]
+section-order = ["future", "feniqs_lite", "standard-library", "third-party", "first-party", "local-folder"]
+
+[tools.ruff.lint.isort.sections]
+feniqs_lite = ["feniqs_lite"]
+
+[tools.setuptools_scm]
+write_to = "feniqs_lite/_version.py"
+local_scheme = "no-local-version"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["feniqs_lite*"]
+exclude = ["pdf/**"]
+
+
+[project.scripts]
+feniqs_lite = "feniqs_lite.main:main"
+
+[tools.mypy]
+ignore_missing_imports = true
+python_version = "3.10"
+
+
+

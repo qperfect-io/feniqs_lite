@@ -1,0 +1,14 @@
+{
+    "time": "2024-06-01 12:00:00+00",
+    "benchmark_id": "DEFAULT",
+    "backend": "cirq_cpu",
+    "package_version": "0.11.1",
+    "backend_type": "sv",
+    "bench_file": "qft",
+    "function_name": "execute",
+    "nb_qubits": 15,
+    "exception": null,
+    "settings": "{\"seed\": 1234,\"precision\":\"double\", \"max_parallel_threads\":\"1\"}",
+    "metrics": "{\"median_rt\": 0.6,\"avg_rt\": 0.7, \"min_rt\": 0.5, \"max_rt\": 0.85}",
+    "benchmark_group": "Test Group"
+}

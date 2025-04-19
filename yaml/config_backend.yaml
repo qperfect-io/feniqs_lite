@@ -1,0 +1,195 @@
+backends:
+
+  qiskit_aer_cpu:
+    device_type: "matrix_product_state"
+    precision: "double"
+    seed: 12345
+    opt_level: 1
+    # parallel
+    max_parallel_threads: 1
+    max_parallel_shots: 0
+    max_parallel_experiments: 07
+    # fusion
+    fusion_enable: true
+    fusion: 10
+    fusion_threshold: 10
+    # statevector
+    statevector_parallel_threshold: 5
+    statevector_sample_measure_opt: 10
+    # mps
+    matrix_product_state_max_bond_dimension: 512
+    mps_parallel_threshold: 0
+    mps_opm_threads: 4
+    mps_lapack: true
+    matrix_product_state_truncation_threshold: 0.000001
+    mps_sample_measure_algorithm: "mps_probabilities"
+    # tensor network
+    tensor_network_num_sampling_qubits: 10
+
+  qiskit_aer_gpu:
+    device_type: "statevector"
+    precision: "double"
+    seed: null
+    # parallel
+    max_parallel_threads: 1
+    max_parallel_shots: 0
+    max_parallel_experiments: 0
+    # fusion
+    fusion_enable: true
+    fusion: 10
+    fusion_threshold: 10
+    # statevector
+    statevector_parallel_threshold: 5
+    statevector_sample_measure_opt: 10
+    # mps
+    matrix_product_state_max_bond_dimension: null
+    mps_parallel_threshold: 14
+    mps_opm_threads: 1
+    mps_lapack: false
+    # tensor network
+    tensor_network_num_sampling_qubits: 10
+
+  qiskit_cloud:
+    device_type: "ibmq_qasm_simulator"
+    precision: "double"
+    token: null
+    backend: null
+    optimization_level: 1
+
+  cirq_cpu:
+    seed: null
+    precision: "double"
+    run_async: false
+    split_untangled_state: false
+  
+  cirq_cloud:
+    backend: null
+    ressource_id: null
+    location: null
+    precision: "double"
+
+  qsimcirq_cpu:
+    seed: null
+    max_parallel_threads: 1
+    fusion_enable: true
+    fusion: 10
+    precision: "double" # Not possible
+
+  qsimcirq_gpu:
+    seed: null
+    fusion_enable: true
+    fusion: 10
+    gpu_mode: 0
+    precision: "double" # not possible
+
+  qulacs_cpu:
+    seed: null
+    max_parallel_threads: 1 # working
+    precision: "double" # Not possible
+    
+  qulacs_gpu:
+    seed: null
+    max_parallel_threads: 1
+    precision: "double" # Not possible
+
+  pennylane_cpu:
+    seed: null
+    simulator_name: "default.qubit"
+    precision: "double" # Not Implemented (pretty sure it's possible)
+
+  pennylane_cloud:
+    simulator_name: "default.qubit"
+    precision: "double"
+
+  mqt_ddsim_cpu:
+    seed: null
+    device_type: "circuit_simulator"
+    precision: "double"
+
+  projectq_cpu:
+    seed: null
+    max_parallel_threads: 1
+    fusion_enable: true
+    optimizer: 0
+    precision: "double"
+  
+  mimiq_julia_cpu:
+    seed: null
+    device_type: "mps"
+    precision: "double"
+     # MPS only
+    bond_dimension: 256
+    entdim: 16
+    targerr: 0.0000000001
+    opt_level: 1
+    perm: false
+    meth: "mpo1z"
+
+
+  mimiq_cloud:
+    fast: false
+    device_type: "statevector"
+    token_path: null
+    precision: "double"
+
+  quantanium_cpu:
+    seed: null
+    device_type: "statevector"
+    precision: "double"
+  
+  yao_cpu:
+    seed: null
+    precision: "double"
+  
+  yao_gpu:
+    seed: null
+    precision: "double"
+
+  stim_cpu:
+    seed: null
+    precision: "double"
+
+  qmatchatea_cpu:
+    seed: null
+    backend: 'PY' # Can also be FR for Fortran based simulations
+    max_parallel_threads: 1
+    precision: "double"
+    linearize_enable: true
+    optimization_level: 1
+    tensor_compilator_enable: true
+    cut_ratio: 0.001
+    svd_ctrl: 'V'
+    max_bond_dimension: 32 #null - let qmatchatea decide by default
+
+  qmatchatea_gpu:
+    seed: null
+    backend: 'PY' # Can also be FR for Fortran based simulations
+    max_parallel_threads: 1
+    precision: "double"
+    linearize_enable: true
+    optimization_level: 1
+    tensor_compilator_enable: true
+    max_bond_dimension: null
+
+  quimb_mps_cpu:
+    seed: null
+    bonddim: 512
+    cutoff: 0.0000001
+    permute: false
+    gate_contract: "auto-mps"
+  
+  quimb_nt_cpu:
+    seed: null
+    contract: false
+   
+  qrisp_cpu:
+    seed: null
+
+  pyqrack_cpu:
+    seed: null  
+
+  braket_cpu:
+    seed: null
+    precision: "double"
+
+result_file: "temp_result.json"
