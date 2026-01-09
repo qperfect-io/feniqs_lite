@@ -1,0 +1,15 @@
+qasm_path, bond_dim, ent_dim, trunc_eps, meth, fuse, perm
+train/ae_ucx_100.qasm, 64, 4, 0.001, vmpoa, T, F
+train/qnn_ucx_100.qasm, 384, 16, 0.00001, dmpo, T, F
+train/qwalk-v-chain_ucx_100.qasm, 32, 8, 0.00001, vmpoa, T, F
+train/ghz_ucx_100.qasm, 4, 4, 0.00001, vmpoa, T, F
+train/qftentangled_ucx_100.qasm, 4, 4, 0.00001, vmpoa, T, F
+train/qpeexact_ucx_100.qasm,  4, 4, 0.00001, vmpoa, T, F
+train/realamprandom_ucx_104.qasm, 32, 4, 0.00001, vmpoa, T, F
+train/wstate_ucx_100.qasm, 4, 4, 0.00001, vmpoa, T, F
+train/graphstate_ucx_100.qasm, 256, 16, 0.00001, vmpoa, T, T
+train/qft_ucx_100.qasm, 4, 4,  0.00001, vmpoa, T, F
+train/qpeinexact_ucx_100.qasm, 4, 4, 0.00001, vmpoa, T, F
+train/su2random_ucx_100.qasm, 32, 4, 0.00001, vmpoa, T, F
+train/random_ucx_104.qasm, 512, 8, 0.00001, vmpoa, T, T
+
