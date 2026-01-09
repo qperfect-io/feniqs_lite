@@ -19,7 +19,7 @@
 - [Output Files](#output-files)
 - [Troubleshooting](#troubleshooting)
 - [Future Improvements](#future-improvements)
-
+- [ML-based MIMIQ--MPS Hyperparameter Recommender](#ml-hyperparameters-recommender)
 
 ## Overview
 **FeniqsOptimizer**  is designed to automatically tune the hyperparameters for Matrix Product State (MPS) simulators to achieve optimal performance. By systematically adjusting settings such as bond dimensions, truncation thresholds, and other simulation-specific parameters, it aims to balance accuracy with computational efficiency. This enables researchers to benchmark and compare simulator performance reliably, ensuring high-fidelity results while minimizing run time.
@@ -182,4 +182,77 @@ The optimizer saves results in CSV format:
 
 ---
 
+## ML-based MIMIQ--MPS Hyperparameter Recommender
+
+This tool trains a machine-learning model that predicts optimal **MIMIQ–MPS**
+simulation parameters directly from an **OpenQASM 2.0** circuit.
+
+It supports:
+- automatic feature extraction from QASM  
+- learning from labeled benchmark data  
+- prediction for new circuits  
+ 
+
+The predicted parameters are: `bond_dim`, `ent_dim`, `trunc_eps`, `meth`, `fuse`, `perm`.
+
+### Input Format for Training
+The training CSV file is summarizes the results obtained from evolutionary optimization step. 
+It must contain the following columns: qasm_path, bond_dim, ent_dim, trunc_eps, meth, fuse, perm
+
+Each row represents a benchmarked quantum circuit with its optimal MIMIQ–MPS
+hyperparameters.
+
+| Column     | Meaning                                    |
+|------------|--------------------------------------------|
+| `qasm_path`| Path to qasm file (training circuit)       |
+| `bond_dim` | MPS bond dimension (4 - 4096)              |
+| `ent_dim`  | Entanglement dimension (4 - 4096)          |
+| `trunc_eps`| truncation threshold (1e-1 -1e-12)         |
+| `meth`     | MPS method (`vmpoa`, `dmpo`)               |
+| `fuse`     | Whether gate fusion is enabled (T/F)       |
+| `perm`     | Whether qubit permutation is enabled  (T/F)|
+
+### Workflow Overview
+Recommended workflow:
+
+1. Train the model on known benchmark circuits   
+2. Inspect extracted features for a given circuit  
+3. Predict hyperparameters for new circuits   
+
+
+#### Step 1 — Train the Model
+
+Run:
+
+```bash
+python get_mps_param.py train --labels data/labels.csv --outdir mimiq_model
+
+```
+This command:
+- loads all QASM files listed in labels.csv
+- extracts numerical features from each circuit
+- trains Random Forest models for all parameters
+- stores the trained model in mimiq_model/
+- It also builds an exact-match cache so training circuits are always predicted
+exactly.
+
+`mimiq_model` is the name of the folder where the models will be saved. You can name it differently if needed.
+
+#### Step 3 - Predict Hyperparameters
+To predict hyperparameters for a new circuit:
+```bash
+python get_mps_param.py predict --modeldir mimiq_model --qasm twolocalrandom_ucx_100.qasm
+
+```
+Just change name `twolocalrandom_ucx_100.qasm` to name of your circuit.
+
+#### Step 3 - Inspect Features
+To see what the model “sees” for a circuit:
+
+```bash
+python get_mps_param.py features --qasm data/train/graphstate_ucx_100.qasm
+
+```
+This prints a JSON object containing extracted features such as: number of qubits, number of gates, two-qubit gate fraction, interaction graph density and etc.
+If predictions look strange, always inspect the extracted features.
 
