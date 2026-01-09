@@ -19,7 +19,7 @@
 - [Output Files](#output-files)
 - [Troubleshooting](#troubleshooting)
 - [Future Improvements](#future-improvements)
-- [ML-based MIMIQ-MPS Hyperparameter Recommender](#ml-hyperparameters-recommender)
+- [ML-based MIMIQ-MPS Hyperparameter Recommender](#ml-based-mimiq-mps-hyperparameter-recommender)
 
 ## Overview
 **FeniqsOptimizer**  is designed to automatically tune the hyperparameters for Matrix Product State (MPS) simulators to achieve optimal performance. By systematically adjusting settings such as bond dimensions, truncation thresholds, and other simulation-specific parameters, it aims to balance accuracy with computational efficiency. This enables researchers to benchmark and compare simulator performance reliably, ensuring high-fidelity results while minimizing run time.
