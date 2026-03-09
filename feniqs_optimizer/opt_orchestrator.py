@@ -13,7 +13,6 @@
 # limitations under the License.
 
 #!/usr/bin/env python3
-#!/usr/bin/env python3
 """
 opt_orchestrator.py
 
