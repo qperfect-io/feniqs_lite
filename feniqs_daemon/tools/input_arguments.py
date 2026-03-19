@@ -79,7 +79,7 @@ def get_empty_argument_parser(add_help: bool = True) -> FeniqsArgument:
     Create an argument parser with predefined options for Feniqs.
     """
     parser = FeniqsArgument(
-        default_config_files="",  # Placeholder for default config files
+        default_config_files=[],  # Placeholder for default config files
         add_env_var_help=False,
         add_config_file_help=False,
         add_help=add_help,
