@@ -23,6 +23,7 @@ import time
 import statistics
 import numpy as np
 
+
 class MimiqJuliaCpuBackend(AbstractJuliaBackend):
     _instance = None
 
@@ -56,9 +57,11 @@ class MimiqJuliaCpuBackend(AbstractJuliaBackend):
             self.define_julia_functions()
 
             if self.config.device_type == 'statevector':
-                self.config.package_version = self._get_julia_package_version("StateVecSim")
+                self.config.package_version = self._get_julia_package_version(
+                    "StateVecSim")
             elif self.config.device_type == 'mps':
-                self.config.package_version = self._get_julia_package_version("MPSSim")
+                self.config.package_version = self._get_julia_package_version(
+                    "MPSSim")
 
             self.separates_execution_and_sampling = False
             self.generate_backend()
@@ -66,7 +69,8 @@ class MimiqJuliaCpuBackend(AbstractJuliaBackend):
 
     def import_packages(self):
         # Import required Julia modules, including PythonCall
-        self.julia_module.seval("using MimiqCircuitsBase, QASMParsers, MPSSim, Random, PythonCall")
+        self.julia_module.seval(
+            "using MimiqCircuitsBase, QASMParsers, MPSSim, Random, PythonCall")
         if self.config.device_type == 'mps':
             self.julia_module.seval("using MPSSim")
         elif self.config.device_type == 'statevector':
@@ -74,7 +78,8 @@ class MimiqJuliaCpuBackend(AbstractJuliaBackend):
 
     def generate_backend(self):
         if self.config.device_type == 'statevector':
-            self.time_value = self.julia_module.seval("@elapsed qcs = StateVecQCS()")
+            self.time_value = self.julia_module.seval(
+                "@elapsed qcs = StateVecQCS()")
         elif self.config.device_type == 'mps':
             options = ''
             if self.config.bond_dimension or self.config.entdim:
@@ -84,7 +89,8 @@ class MimiqJuliaCpuBackend(AbstractJuliaBackend):
                 if self.config.entdim:
                     options += f'entdim={self.config.entdim},'
                 options = options[:-1]
-            self.time_value = self.julia_module.seval(f"@elapsed qcs = MPSSimulator({options})")
+            self.time_value = self.julia_module.seval(
+                f"@elapsed qcs = MPSSimulator({options})")
 
     def define_julia_functions(self):
         # Define Julia functions and ensure the global backend is defined.
@@ -181,20 +187,21 @@ end
         """)
 
     def parse(self):
-#        self.time_value = self.julia_module.seval(
-#            "@elapsed circuit = QASMParsers.Interpreters.interpret(QASMParsers.Parsers.parseopenqasm(qasm_str))"
-#        )
-       start = time.time()
-       # Import the QASM file and compile the circuit
-       circuit = self.julia_module.import_qasm1(self._qasm_file)
-       circuit, perm = self.julia_module.compile(circuit, opt_level=1, reorderqubits=False, optimize=True)
-       self.compiled_circuit = circuit
-       end = time.time()
-       self.time_value = end - start
-       
-       # Optionally, return the circuit if needed:
-       return circuit
-   
+        #        self.time_value = self.julia_module.seval(
+        #            "@elapsed circuit = QASMParsers.Interpreters.interpret(QASMParsers.Parsers.parseopenqasm(qasm_str))"
+        #        )
+        start = time.time()
+        # Import the QASM file and compile the circuit
+        circuit = self.julia_module.import_qasm1(self._qasm_file)
+        circuit, perm = self.julia_module.compile(
+            circuit, opt_level=1, reorderqubits=False, optimize=True)
+        self.compiled_circuit = circuit
+        end = time.time()
+        self.time_value = end - start
+
+        # Optionally, return the circuit if needed:
+        return circuit
+
     @AbstractBackend._measure_time
     def format_sample(self, samples):
         # Customize sample formatting as needed.
@@ -203,32 +210,31 @@ end
 
     def execute_and_sample(self):
         start = time.time()
-        #qc = self.julia_module.import_qasm1(self._qasm_file)
-        #qc, perm = self.julia_module.compile(qc, opt_level=1, reorderqubits=False, optimize=True)
+        # qc = self.julia_module.import_qasm1(self._qasm_file)
+        # qc, perm = self.julia_module.compile(qc, opt_level=1, reorderqubits=False, optimize=True)
         samples, fid = self.julia_module.execute_and_sample1(
             384,      # bond_dimension
             4,       # entdim
             0.0000000001,   # targerr
             "zipup",  # meth
-            self.compiled_circuit, #qc,
+            self.compiled_circuit,  # qc,
             1000
         )
         end = time.time()
         self.time_value = end - start
         return samples, fid
 
-    # def get_mirror_fidelity(self, qasm_file, mirror_qasm_file):
-    #     zero_prob = self.julia_module.get_mirror_fidelity(
-    #         qasm_file,
-    #         mirror_qasm_file,
-    #         64,   # bond_dimension
-    #         4,     # entdim
-    #         0.01, # targerr
-    #         "mpo1z" # meth
-            
-    #     )
-    #     return zero_prob
+    def get_mirror_fidelity(self, qasm_file, mirror_qasm_file):
+        zero_prob = self.julia_module.get_mirror_fidelity(
+            qasm_file,
+            mirror_qasm_file,
+            64,   # bond_dimension
+            4,     # entdim
+            0.01,  # targerr
+            "mpo1z"  # meth
+
+        )
+        return zero_prob
 
     def get_precision(self):
         return "double"
-

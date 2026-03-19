@@ -19,6 +19,8 @@ from feniqs_lib.managers.hook_specs import hookimpl
 from feniqs_lib.tools.backends_tools import run_backend_common
 from feniqs_lib.tools.constants import GlobalConfig
 from ..task.task import run_task, results_to_json
+import os
+
 
 class MimiqJuliaCpuPlugin:
     @hookimpl
@@ -27,12 +29,9 @@ class MimiqJuliaCpuPlugin:
         fi_env = os.environ.get("FI_ENABLED", "False")
         global_config.incl_first = fi_env.lower() in ["true", "1", "yes"]
         run_env = int(os.environ.get("RUNS", 3))
-        global_config.runs = run_env  
+        global_config.runs = run_env
         return run_backend_common(MimiqJuliaCpuBackend, test_case, nb_shots, seed, env, global_config.incl_first, global_config.runs, **kwargs)
 
 
 def plugin():
     return MimiqJuliaCpuPlugin()
-
-
-

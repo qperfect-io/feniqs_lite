@@ -1,7 +1,7 @@
 venv_description:
 
   qiskit_aer_cpu:
-    install: false
+    install: true
     folder_name: .qiskit_aer_cpu_env
     ignore_version: true
     dependencies:
@@ -127,7 +127,7 @@ venv_description:
       - "mimiqcircuits @ git+https://github.com/qperfect-io/mimiqcircuits-python.git"
 
   qmatchatea_cpu:
-    install: true
+    install: false
     folder_name: .qmatchatea_cpu_env
     ignore_version: false
     dependencies:

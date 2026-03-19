@@ -1,0 +1,6 @@
+*_model
+*_env
+*_venv
+
+__pycache__
+paper_data
