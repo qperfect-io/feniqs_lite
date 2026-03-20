@@ -145,7 +145,6 @@ end
 
 function execute1(bonddim, entdim, targerr, meth, circ::MimiqCircuitsBase.Circuit; state=nothing)
     sim = MPSSimulator(; bonddim=bonddim, entdim=entdim)
-    println("MIMIQ")
     nqubits = MimiqCircuitsBase.numqubits(circ)
     if isnothing(state)
         state = zerostate(sim, nqubits, nqubits, 0)
@@ -159,9 +158,7 @@ function execute_and_sample1(bonddim::Int, entdim::Int, targerr::Float64, meth::
                                circ::MimiqCircuitsBase.Circuit, nshots::Int; state=nothing)
     sim = MPSSimulator(; bonddim=bonddim, entdim=entdim)
     nqubits = MimiqCircuitsBase.numqubits(circ)
-    println("Start compile")
     circ, perm = compile(circ; opt_level=1)
-    println("End compile")
     if isnothing(state)
         state = zerostate(sim, nqubits, nqubits, 0)
     end
