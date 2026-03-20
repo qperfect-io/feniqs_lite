@@ -52,7 +52,7 @@ def main():
 
     # Parse command-line arguments
     parser = argparse.ArgumentParser(
-        description="Run quantum backend optimizer.")
+        description="Generates the Database for Circuit parameters optimization.")
     parser.add_argument("--backend", type=str,
                         default="QiskitAerCpu", help="Quantum backend name")
     parser.add_argument("--qasm", type=str, help="QASM files folder")
@@ -77,6 +77,8 @@ def main():
     plugin_manager.register_all_plugins()
     files_seen = []
 
+    # If a database of the same name is already present 
+    # We extract the already treated files and mark them as seen
     database = f"{args.backend}_{args.method}_db.csv"
     new_db = not os.path.exists(database)
     if not new_db:
@@ -96,7 +98,7 @@ def main():
 
     all_files = []
 
-    # flatten the files
+    # flatten the files so we can shuffle the order in which we are going to treat them
     for root, _, files in os.walk(directory):
         for filename in files:
             if re.search(reg, filename):
@@ -109,11 +111,10 @@ def main():
                     continue
                 
                 all_files.append((root, filename))
-            
-            
 
     shuffle(all_files)
 
+    #ietrate over the files, optimize the parameter for the given backend and save the results
     for root, filename in all_files:
         if re.search(reg, filename):
             file_path = os.path.join(root, filename)
@@ -148,15 +149,6 @@ def main():
                 writer.writerow([file_path] + list(best_params.values()))
             
             files_seen.append(file_path)
-                    
-
-
-
-
-
-    
-
-
 
 if __name__ == "__main__":
     main()
