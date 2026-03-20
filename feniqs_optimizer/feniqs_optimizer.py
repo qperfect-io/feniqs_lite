@@ -37,6 +37,8 @@ from pymoo.util.ref_dirs import get_reference_directions
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 CMA_FIDELITY_ACCURACY = 0.99
+
+
 class FeniqsOptimizer:
     """
     FeniqsOptimizer integrates different optimization algorithms with quantum backends.
@@ -46,7 +48,7 @@ class FeniqsOptimizer:
         - NSGA-II (minimizes runtime and maximizes fidelity as independent objectives)
     """
 
-    def __init__(self, backend_name, qasm_file, mirror_qasm_file, plugin_manager, 
+    def __init__(self, backend_name, qasm_file, mirror_qasm_file, plugin_manager,
                  config_path="yaml/optimizator.yaml", opt_method="cmaes", num_evaluations=3):
         """
         Initialize the optimizer with backend-specific parameters.
@@ -66,6 +68,10 @@ class FeniqsOptimizer:
         self.opt_method = opt_method.lower()
         self.num_evaluations = num_evaluations  # Used to average noisy results (for NSGA-2 & MOEA/D)
         self.evaluation_cache = OrderedDict()
+
+        # counters below help distinguish real backend executions from cache reuse.
+        self.backend_call_count = 0
+        self.cache_hit_count = 0
 
         # Load backend-specific configuration
         with open(config_path, "r") as file:
@@ -95,18 +101,18 @@ class FeniqsOptimizer:
             if valid_values:
                 discrete_params[param] = valid_values[int(np.clip(np.round(x[i] * (len(valid_values) - 1)), 0, len(valid_values) - 1))]
         return discrete_params
-    
+
     def map_discrete_with_encoding(self, x):
         """
         Maps continuous values from optimization space to the nearest valid discrete values.
         This is done by selecting the nearest point in the given set.
         Here, we record the difference (or distance) for potential margin correction.
 
-        :param x: List of continuous values from optimization. 
+        :param x: List of continuous values from optimization.
         :return: A tuple: (mapped_parameters, distances) - Dictionary of mapped discrete parameters and distances for margin correction
         """
         discrete_params = {}
-        distances = {}    
+        distances = {}
         for i, param in enumerate(self.optimization_params):
             valid_values = self.valid_params.get(param, [])
             if valid_values:
@@ -118,13 +124,23 @@ class FeniqsOptimizer:
                 distances[param] = abs(x[i] * (len(valid_values) - 1) - idx)
         return discrete_params, distances
 
+    def _make_cache_key(self, params_dict):
+        """
+        Creates a stable cache key from already discretized backend parameters.
+
+        :param params_dict: Dictionary with discrete backend parameters.
+        :return: Hashable key for evaluation cache.
+        """
+        # cache by discrete parameters, because different continuous points can map to the same backend configuration.
+        return tuple(sorted(params_dict.items()))
+
     def apply_margin_correction(self, es, solutions, distances, margin_threshold=0.1):
         """
         Applies margin correction to the covariance matrix for discrete parameters.
         For each parameter, the method computes the standardized distance and the marginal
         probability. If the marginal probability falls below the margin_threshold, the covariance
         matrix is adjusted to increase the likelihood of sampling neighboring discrete values.
-        
+
         :param es: The CMA-ES object with attributes es.C and es.sigma.
         :param solutions: Candidate solutions used for iterating over distances.
         :param distances: List of dictionaries with distances for each parameter from the encoding.
@@ -170,19 +186,40 @@ class FeniqsOptimizer:
         """
         params_dict = self.map_discrete(params)
 
-        total_runtime = 0
-        total_fidelity = 0
+        # use the mapped discrete parameters as the cache identity.
+        cache_key = self._make_cache_key(params_dict)
+
+        # if the same discrete setup was already evaluated, reuse it and avoid a backend call.
+        if cache_key in self.evaluation_cache:
+            self.cache_hit_count += 1
+            logger.info(f"[CACHE HIT] Params: {params_dict}")
+            return self.evaluation_cache[cache_key]
+
+        total_runtime = 0.0
+        total_fidelity = 0.0
 
         for _ in range(self.num_evaluations):  # Running multiple times to average noisy results
             try:
+                # this counter tracks only real backend executions.
+                self.backend_call_count += 1
+
                 metrics, _ = self.plugin_manager.run_backend(
                     self.backend_name, self.qasm_file, nb_shots=1000, **params_dict
                 )
+
+                # validate metric fields explicitly to avoid silently propagating bad values.
                 runtime = metrics["total"]["avg_rt"]
                 fidelity = metrics["fidelity"]["avg_rt"]
+
+                if runtime is None or fidelity is None:
+                    raise ValueError(f"Received invalid metrics: runtime={runtime}, fidelity={fidelity}")
+
             except Exception as e:
-                logger.warning(f"Execution failed for {params_dict}. Assigning high penalty. Error: {e}")
-                return 1e6, -1  # Assign worst case values if execution fails
+                logger.warning(
+                    f"Execution failed for {params_dict}. "
+                    f"Penalty will be returned but not cached. Error: {e}"
+                )
+                return 1e6, -1
 
             total_runtime += runtime
             total_fidelity += fidelity
@@ -190,14 +227,15 @@ class FeniqsOptimizer:
         avg_runtime = total_runtime / self.num_evaluations
         avg_fidelity = total_fidelity / self.num_evaluations
 
-        # **Only for CMA-ES: Penalize low-fidelity solutions**
-        if self.opt_method == "cmaes" and avg_fidelity < CMA_FIDELITY_ACCURACY:
-            avg_runtime = 1e6  
-
         # Print evaluated parameters and results
         logger.info(f"**Params: {params_dict} → Fidelity: {avg_fidelity:.5f}, Avg Runtime: {avg_runtime:.2f} s**")
 
-        return avg_runtime, avg_fidelity
+        result = (avg_runtime, avg_fidelity)
+
+        # cache only successful evaluations.
+        self.evaluation_cache[cache_key] = result
+
+        return result
 
     def optimize(self, max_generations=10, population_size=10):
         """
@@ -221,12 +259,8 @@ class FeniqsOptimizer:
         x0 = [0.5] * len(self.optimization_params)  # Start in the middle
         sigma0 = 0.2  # Initial search radius
 
-        def constraints(x):
-            _, fidelity = self.execute_with_params(x)
-            return [CMA_FIDELITY_ACCURACY - fidelity]
-
-        cfun = cma.ConstrainedFitnessAL(lambda x: self.execute_with_params(x)[0], constraints)
-        nh = cma.NoiseHandler(len(x0), [2, 5, 10])  # Evaluations per stage
+        # direct evaluation loop is used instead of ConstrainedFitnessAL so runtime/fidelity are computed once per candidate.
+        # NoiseHandler is intentionally not used here to keep the number of backend calls predictable.
 
         es = cma.CMAEvolutionStrategy(x0, sigma0, {
             "maxiter": max_generations,
@@ -241,51 +275,78 @@ class FeniqsOptimizer:
 
         with open(filename, 'a+', newline='') as file:
             writer = csv.writer(file)
-            writer.writerow(["Generation", "Best Runtime", "Best Parameters"])
+            writer.writerow(["Generation", "Best Runtime", "Best Fidelity", "Best Parameters"])
 
         gen = 0
         while not es.stop():
-            solutions, fit_vals = es.ask_and_eval(cfun, evaluations=nh.evaluations)
-            
-            # Apply the new sample encoding and record distances for margin correction.
-            mapped_solutions = []
+            # ask for candidate solutions once per generation.
+            solutions = es.ask()
+
+            fit_vals = []
             all_distances = []
+            evaluated_results = []
+
+            # evaluate each candidate exactly once and reuse fidelity for the constraint penalty.
             for sol in solutions:
-                mapped, dist = self.map_discrete_with_encoding(sol)
-                mapped_solutions.append(mapped)
+                runtime, fidelity = self.execute_with_params(sol)
+                evaluated_results.append((runtime, fidelity))
+
+                if fidelity < 0:
+                    # backend failed, assign a very large penalty.
+                    penalized_runtime = 1e9
+                elif fidelity < CMA_FIDELITY_ACCURACY:
+                    penalized_runtime = 1e6 + (CMA_FIDELITY_ACCURACY - fidelity) * 1e6
+                else:
+                    penalized_runtime = runtime
+
+                fit_vals.append(penalized_runtime)
+
+                # Apply the new sample encoding and record distances for margin correction.
+                _, dist = self.map_discrete_with_encoding(sol)
                 all_distances.append(dist)
-            
+
+            # Safety check: CMA-ES requires one fitness value per solution.
+            if len(fit_vals) != len(solutions):
+                raise RuntimeError(
+                    f"Internal error: len(fit_vals)={len(fit_vals)} != len(solutions)={len(solutions)}"
+                )
+
             # Apply margin correction based on the recorded distances.
             es = self.apply_margin_correction(es, solutions, all_distances, margin_threshold=0.1)
-            
+
             es.tell(solutions, fit_vals)
-            
-            # Save best parameters from the current generation.
-            best_params, _ = self.map_discrete_with_encoding(es.result.xbest)
-            best_runtime = es.result.fbest
-            results.append((gen, best_runtime, best_params))
-            
+
+            # choose the best solution of this generation from the already computed values.
+            best_idx = int(np.argmin(fit_vals))
+            best_runtime, best_fidelity = evaluated_results[best_idx]
+            best_params, _ = self.map_discrete_with_encoding(solutions[best_idx])
+
+            results.append((gen, best_runtime, best_fidelity, best_params))
+
             with open(filename, 'a', newline='') as file:
                 writer = csv.writer(file)
-                writer.writerow([gen, best_runtime, best_params])
-            
+                writer.writerow([gen, best_runtime, best_fidelity, best_params])
+
             gen += 1
             es.disp()
 
         # Final best solution.
         best_params, _ = self.map_discrete_with_encoding(es.result.xbest)
-        best_runtime = es.result.fbest
-        results.append(("Final", best_runtime, best_params))
+        best_runtime, best_fidelity = self.execute_with_params(es.result.xbest)
+        results.append(("Final", best_runtime, best_fidelity, best_params))
 
         with open(filename, 'a', newline='') as file:
             writer = csv.writer(file)
-            writer.writerow(["Final", best_runtime, best_params])
+            writer.writerow(["Final", best_runtime, best_fidelity, best_params])
 
         print(f"\n**Final Best Parameters: {best_params}**")
         print(f"\n**Best Runtime Achieved: {best_runtime:.2f} s**")
-        
-        return best_params
+        print(f"\n**Best Fidelity Achieved: {best_fidelity:.5f}**")
+        print(f"\n**Real backend calls: {self.backend_call_count}**")
+        print(f"**Cache hits: {self.cache_hit_count}**")
+        print(f"**Cached evaluations stored: {len(self.evaluation_cache)}**")
 
+        return best_params
 
     def _optimize_moo(self, max_generations, population_size):
         """
@@ -295,7 +356,7 @@ class FeniqsOptimizer:
         ### MOEA/D and NSGA-II Parameter Explanation
 
         #### MOEA/D Parameters:
-        MOEA/D (Multi-Objective Evolutionary Algorithm based on Decomposition), 
+        MOEA/D (Multi-Objective Evolutionary Algorithm based on Decomposition),
         where different objectives (e.g., minimizing runtime while maximizing fidelity) are optimized simultaneously.
 
         - **ref_dirs (`get_reference_directions("das-dennis", 2, n_partitions=12)`)**:
@@ -322,14 +383,14 @@ class FeniqsOptimizer:
               - Good for problems where Pareto fronts are complex and need wider exploration.
 
         #### NSGA-II Parameters:
-        NSGA-II (Non-dominated Sorting Genetic Algorithm) is an **elitist, fast sorting genetic algorithm** that does not require 
+        NSGA-II (Non-dominated Sorting Genetic Algorithm) is an **elitist, fast sorting genetic algorithm** that does not require
         decomposition like MOEA/D. Instead, it uses **Pareto dominance** and crowding distance sorting.
 
         - **pop_size (population size)**:
             - Defines the **number of candidate solutions** in each generation.
             - A larger population **increases diversity** but **slows down convergence**.
             - Typically, **higher population sizes (50-200)** work better for **complex multi-objective problems**.
-        
+
          - **Crossover Operators (Recombination)**
           - `"SBX"` (Simulated Binary Crossover): `SBX(prob=0.9, eta=15)`
             - `prob=0.9` → Crossover probability.
@@ -340,7 +401,6 @@ class FeniqsOptimizer:
             - `prob=1.0/n_var` → Each variable has `1/n_var` probability to mutate.
             - `eta=20` → Controls mutation spread (higher values lead to smaller changes).
 
-      
         - **When to Use MOEA/D vs. NSGA-II?**
             - MOEA/D if understand problem structure is clear and can design good reference directions.
             - NSGA-II if the problem is complex and needs general Pareto-based optimization.
@@ -355,7 +415,7 @@ class FeniqsOptimizer:
             except Exception as e:
                 logger.error(f"Failed to generate reference directions for MOEA/D: {e}")
                 raise RuntimeError("Reference direction generation failed for MOEA/D.")
-            
+
             if ref_dirs is None or len(ref_dirs) == 0:
                 raise ValueError("Reference directions for MOEA/D could not be generated. Try adjusting 'n_partitions'.")
 
@@ -414,7 +474,6 @@ class FeniqsOptimizer:
 
             logger.info(f" Pareto front results saved to {filename}")
 
-   
 
 class QuantumOptimizationProblem(Problem):
     """
@@ -435,14 +494,14 @@ class QuantumOptimizationProblem(Problem):
     #     - Solutions with fidelity < 0.99 are penalized by adding a constraint.
     #     """
     #     results = [self.optimizer.execute_with_params(xi) for xi in x]
-        
+    #
     #     # Extract runtime and fidelity
     #     runtimes = [r for r, f in results]
     #     fidelities = [f for r, f in results]
-
+    #
     #     # Convert fidelity to minimization (-fidelity)
     #     out["F"] = np.column_stack([runtimes, -np.array(fidelities)])
-
+    #
     #     # Constraint: Fidelity should be >= 0.99 (Negative values mean constraint violation)
     #     out["G"] = np.array([0.9999 - f for f in fidelities])
     def _evaluate(self, x, out, *args, **kwargs):
@@ -452,7 +511,6 @@ class QuantumOptimizationProblem(Problem):
         - Fidelity should be maximized, so we use `-fidelity` to convert it to minimization.
         """
         results = [self.optimizer.execute_with_params(xi) for xi in x]
-        
+
         # Convert fidelity to minimization (-fidelity)
         out["F"] = np.array([[runtime, -fidelity] for runtime, fidelity in results])
-
