@@ -210,16 +210,16 @@ end
 
     def execute_and_sample(self):
         start = time.time()
-        # qc = self.julia_module.import_qasm1(self._qasm_file)
-        # qc, perm = self.julia_module.compile(qc, opt_level=1, reorderqubits=False, optimize=True)
+
         samples, fid = self.julia_module.execute_and_sample1(
-            384,      # bond_dimension
-            4,       # entdim
-            0.0000000001,   # targerr
-            "zipup",  # meth
-            self.compiled_circuit,  # qc,
-            1000
+            int(self.config.bond_dimension),
+            int(self.config.entdim),
+            float(self.config.targerr),
+            str(self.config.meth),
+            self.compiled_circuit,
+            int(self.config.nb_shots),
         )
+
         end = time.time()
         self.time_value = end - start
         return samples, fid
