@@ -29,6 +29,7 @@ python feniqs_optimizer/run_optimizer.py --backend QiskitAerCpu
                                          --num_eval 3
 
 """
+from random import shuffle
 import os
 import sys
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -74,57 +75,81 @@ def main():
     # Initialize plugin manager (from FENIQS)
     plugin_manager = get_plugin_manager()
     plugin_manager.register_all_plugins()
+    files_seen = []
 
+    database = f"{args.backend}_{args.method}_db.csv"
+    new_db = not os.path.exists(database)
+    if not new_db:
+        with open(database, 'r') as csv_file:
+            reader = csv.reader(csv_file)
+            first_ite = True
+            for row in reader:
+                if first_ite:
+                    first_ite = False
+                    continue
+                files_seen.append(row[0])
+        print(" Here are all the files alreday handled:")
+        print(files_seen)
 
-    database = f"{args.backend}_db.csv"
-    i = 2
-    while os.path.exists(database):
-        database = f"{args.backend}_db" + str(i) + ".csv"
-        i += 1
-    
     directory = args.qasm
     reg = r".*\.qasm$"
 
-    first_ite = True
+    all_files = []
 
+    # flatten the files
     for root, _, files in os.walk(directory):
         for filename in files:
             if re.search(reg, filename):
                 file_path = os.path.join(root, filename)
+                if file_path in files_seen:
+                    continue
                 mirror_path = file_path[:-4] + "mirror"
-                if os.path.exists(mirror_path):
-                    print(f"---------------------------------{filename}---------------------------------------------")
-                    print(f"\n Running optimizer with {args.method.upper()} on backend {args.backend}...\n")
+                if not os.path.exists(mirror_path):
+                    Warning(f"The file {filename} won't be used because no file {mirror_path} was found")
+                    continue
+                
+                all_files.append((root, filename))
+            
+            
 
-                    # Create and run optimizer
-                    optimizer = FeniqsOptimizer(
-                        backend_name=args.backend,
-                        qasm_file=file_path,
-                        mirror_qasm_file=mirror_path,
-                        plugin_manager=plugin_manager,
-                        config_path=args.config,
-                        opt_method=args.method,
-                        num_evaluations=args.num_eval
-                    )
+    shuffle(all_files)
 
-                    best_params = optimizer.optimize(
-                        max_generations=args.gens, population_size=args.pop)
+    for root, filename in all_files:
+        if re.search(reg, filename):
+            file_path = os.path.join(root, filename)
+            mirror_path = file_path[:-4] + "mirror"
+            print(f"---------------------------------{filename}---------------------------------------------")
+            print(f"\n Running optimizer with {args.method.upper()} on backend {args.backend}...\n")
 
-                    print(f"\n**Best Parameters Found:** {best_params}")
+            # Create and run optimizer
+            optimizer = FeniqsOptimizer(
+                backend_name=args.backend,
+                qasm_file=file_path,
+                mirror_qasm_file=mirror_path,
+                plugin_manager=plugin_manager,
+                config_path=args.config,
+                opt_method=args.method,
+                num_evaluations=args.num_eval
+            )
 
-                    if first_ite:
-                        with open(database, 'a+', newline='') as file:
-                            writer = csv.writer(file)
-                            writer.writerow(["qasm_path"] + list(best_params.keys()))
+            best_params = optimizer.optimize(
+                max_generations=args.gens, population_size=args.pop)
 
-                        first_ite = False
+            print(f"\n**Best Parameters Found:** {best_params}")
 
-                    with open(database, 'a', newline='') as file:
-                        writer = csv.writer(file)
-                        writer.writerow([file_path] + list(best_params.values()))
+            if new_db:
+                with open(database, 'a+', newline='') as file:
+                    writer = csv.writer(file)
+                    writer.writerow(["qasm_path"] + list(best_params.keys()))
+                new_db = False
+
+            with open(database, 'a', newline='') as file:
+                writer = csv.writer(file)
+                writer.writerow([file_path] + list(best_params.values()))
+            
+            files_seen.append(file_path)
                     
-                else:
-                    Warning(f"The file {filename} was skipped because no file {mirror_path} was found")
+
 
 
 
