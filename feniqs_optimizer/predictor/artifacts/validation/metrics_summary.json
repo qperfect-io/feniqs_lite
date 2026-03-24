@@ -1,0 +1,101 @@
+{
+  "random_grouped_split": {
+    "n_circuits_total": 57,
+    "n_circuits_validated": 57,
+    "n_circuits_not_evaluable": 0,
+    "offline_coverage": 1.0,
+    "exact_match_rate": 0.05263157894736842,
+    "near_optimal_rate": 0.5964912280701754,
+    "median_runtime_ratio": 1.0294173255414214,
+    "p90_runtime_ratio": 1.3854924969928082,
+    "p95_runtime_ratio": 1.440684084030913,
+    "median_fidelity_gap": 0.0,
+    "p90_fidelity_gap": 0.00039999999999999893,
+    "p95_fidelity_gap": 0.0010000000000000009,
+    "runtime_fail_rate_1p2": 0.24561403508771928,
+    "runtime_fail_rate_1p5": 0.03508771929824561,
+    "fidelity_fail_rate_tol": 0.10526315789473684,
+    "fidelity_fail_rate_10xtol": 0.017543859649122806,
+    "top_1_near_optimal_rate": 0.5964912280701754,
+    "top_3_near_optimal_rate": 0.7192982456140351,
+    "top_5_near_optimal_rate": 0.8245614035087719,
+    "near_optimal_rate_ci95": [
+      0.47368421052631576,
+      0.7192982456140351
+    ],
+    "median_runtime_ratio_ci95": [
+      1.0180654001483562,
+      1.055913097172093
+    ],
+    "median_fidelity_gap_ci95": [
+      0.0,
+      0.0
+    ]
+  },
+  "leave_one_family_out": {
+    "n_circuits_total": 227,
+    "n_circuits_validated": 227,
+    "n_circuits_not_evaluable": 0,
+    "offline_coverage": 1.0,
+    "exact_match_rate": 0.01762114537444934,
+    "near_optimal_rate": 0.4669603524229075,
+    "median_runtime_ratio": 1.064255194667044,
+    "p90_runtime_ratio": 1.571236249925925,
+    "p95_runtime_ratio": 2.1365887768925362,
+    "median_fidelity_gap": 0.0,
+    "p90_fidelity_gap": 0.0,
+    "p95_fidelity_gap": 0.0,
+    "runtime_fail_rate_1p2": 0.3744493392070485,
+    "runtime_fail_rate_1p5": 0.1145374449339207,
+    "fidelity_fail_rate_tol": 0.03524229074889868,
+    "fidelity_fail_rate_10xtol": 0.01762114537444934,
+    "top_1_near_optimal_rate": 0.4669603524229075,
+    "top_3_near_optimal_rate": 0.5814977973568282,
+    "top_5_near_optimal_rate": 0.6519823788546255,
+    "near_optimal_rate_ci95": [
+      0.4052863436123348,
+      0.5286343612334802
+    ],
+    "median_runtime_ratio_ci95": [
+      1.0452837717779218,
+      1.1309825450450426
+    ],
+    "median_fidelity_gap_ci95": [
+      0.0,
+      0.0
+    ]
+  },
+  "size_based_test": {
+    "n_circuits_total": 227,
+    "n_circuits_validated": 227,
+    "n_circuits_not_evaluable": 0,
+    "offline_coverage": 1.0,
+    "exact_match_rate": 0.05286343612334802,
+    "near_optimal_rate": 0.6475770925110133,
+    "median_runtime_ratio": 1.0272358407265674,
+    "p90_runtime_ratio": 1.3898805221559465,
+    "p95_runtime_ratio": 1.4611272166274438,
+    "median_fidelity_gap": 0.0,
+    "p90_fidelity_gap": 0.00040000000000000604,
+    "p95_fidelity_gap": 0.0010000000000000009,
+    "runtime_fail_rate_1p2": 0.18502202643171806,
+    "runtime_fail_rate_1p5": 0.039647577092511016,
+    "fidelity_fail_rate_tol": 0.1013215859030837,
+    "fidelity_fail_rate_10xtol": 0.022026431718061675,
+    "top_1_near_optimal_rate": 0.6475770925110133,
+    "top_3_near_optimal_rate": 0.7400881057268722,
+    "top_5_near_optimal_rate": 0.788546255506608,
+    "near_optimal_rate_ci95": [
+      0.5901982378854626,
+      0.7136563876651982
+    ],
+    "median_runtime_ratio_ci95": [
+      1.020591045603327,
+      1.0329522404573122
+    ],
+    "median_fidelity_gap_ci95": [
+      0.0,
+      0.0
+    ]
+  }
+}
