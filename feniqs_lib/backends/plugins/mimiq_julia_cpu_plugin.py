@@ -1,4 +1,3 @@
-
 #
 # Copyright © 2024 QPerfect. All Rights Reserved.
 #
@@ -14,12 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+
 from ..quantum_backends.mimiq_julia_backend import MimiqJuliaCpuBackend
 from feniqs_lib.managers.hook_specs import hookimpl
 from feniqs_lib.tools.backends_tools import run_backend_common
 from feniqs_lib.tools.constants import GlobalConfig
-from ..task.task import run_task, results_to_json
-import os
 
 
 class MimiqJuliaCpuPlugin:
@@ -30,7 +29,17 @@ class MimiqJuliaCpuPlugin:
         global_config.incl_first = fi_env.lower() in ["true", "1", "yes"]
         run_env = int(os.environ.get("RUNS", 3))
         global_config.runs = run_env
-        return run_backend_common(MimiqJuliaCpuBackend, test_case, nb_shots, seed, env, global_config.incl_first, global_config.runs, **kwargs)
+        return run_backend_common(
+            MimiqJuliaCpuBackend,
+            test_case,
+            nb_shots,
+            seed,
+            env,
+            global_config.incl_first,
+            global_config.runs,
+            **kwargs,
+        )
+
 
 
 def plugin():

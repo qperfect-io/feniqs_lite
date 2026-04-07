@@ -3,38 +3,36 @@
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+
+from __future__ import annotations
+
+import csv
+import glob
+import logging
+import os
+import sys
+from collections import OrderedDict
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import cma
-import yaml
 import numpy as np
-import logging
-import csv
-import os
-from datetime import datetime
-from collections import OrderedDict
+import yaml
 from pymoo.algorithms.moo.moead import MOEAD
 from pymoo.algorithms.moo.nsga2 import NSGA2
-
+from pymoo.core.problem import Problem
 from pymoo.operators.crossover.sbx import SBX
 from pymoo.operators.mutation.pm import PM
-
 from pymoo.optimize import minimize
-from pymoo.core.problem import Problem
 from pymoo.termination import get_termination
 from pymoo.util.ref_dirs import get_reference_directions
 
+from feniqs_lib.tools import constants
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 CMA_FIDELITY_ACCURACY = 0.99
 
@@ -43,37 +41,34 @@ class FeniqsOptimizer:
     """
     FeniqsOptimizer integrates different optimization algorithms with quantum backends.
     Supported optimizers:
-        - CMA-ES (minimizes runtime while ensuring fidelity >= CMA_FIDELITY_ACCURACY)
-        - MOEA/D (minimizes runtime and maximizes fidelity as independent objectives)
-        - NSGA-II (minimizes runtime and maximizes fidelity as independent objectives)
+        - CMA-ES
+        - MOEA/D
+        - NSGA-II
+
+    In addition to optimization, this class stores every evaluated point and can
+    write a CSV similar to the attached full database:
+        qasm_path, runtime, fidelity, <optimized params...>, is_best
     """
 
-    def __init__(self, backend_name, qasm_file, mirror_qasm_file, plugin_manager,
-                 config_path="yaml/optimizator.yaml", opt_method="cmaes", num_evaluations=3):
-        """
-        Initialize the optimizer with backend-specific parameters.
-
-        :param backend_name: Name of the quantum backend (e.g., "qiskit - QiskitAerCpu").
-        :param qasm_file: Path to the main QASM file.
-        :param mirror_qasm_file: Path to the mirrored QASM file (for fidelity calculation).
-        :param plugin_manager: Feniqs PluginManager instance to run backends.
-        :param config_path: Path to the YAML config defining valid backend parameters got optimization.
-        :param opt_method: Optimization algorithm ("cmaes", "moead", "nsga2").
-        :param num_evaluations: Number of times to run the backend per evaluation (to average out noise).
-        """
+    def __init__(
+        self,
+        backend_name,
+        qasm_file,
+        mirror_qasm_file,
+        plugin_manager,
+        config_path="yaml/optimizator.yaml",
+        opt_method="cmaes",
+        num_evaluations=3,
+        csv_output_path: Optional[str] = None,
+    ):
         self.backend_name = backend_name
         self.qasm_file = qasm_file
         self.mirror_qasm_file = mirror_qasm_file
         self.plugin_manager = plugin_manager
         self.opt_method = opt_method.lower()
-        self.num_evaluations = num_evaluations  # Used to average noisy results (for NSGA-2 & MOEA/D)
+        self.num_evaluations = num_evaluations
         self.evaluation_cache = OrderedDict()
 
-        # counters below help distinguish real backend executions from cache reuse.
-        self.backend_call_count = 0
-        self.cache_hit_count = 0
-
-        # Load backend-specific configuration
         with open(config_path, "r") as file:
             config = yaml.safe_load(file)
 
@@ -84,141 +79,218 @@ class FeniqsOptimizer:
         self.valid_params = backend_config["params"]
         self.optimization_params = backend_config["optimization_params"]
 
-        # Ensure valid optimization method
         if self.opt_method not in ["cmaes", "moead", "nsga2"]:
-            raise ValueError(f"Invalid optimization method `{self.opt_method}`. Choose from: 'cmaes', 'moead', 'nsga2'.")
+            raise ValueError(
+                f"Invalid optimization method `{self.opt_method}`. Choose from: 'cmaes', 'moead', 'nsga2'."
+            )
+
+        self.csv_output_path = csv_output_path or self._default_csv_output_path()
+        self._evaluation_rows: List[Dict[str, object]] = []
+        self._best_row_index: Optional[int] = None
+        self._persistent_backend = None
+        self._use_persistent_mimiq = str(self.backend_name).lower() in {
+            "mimiqjuliacpu",
+            "mimiq_julia_cpu",
+        }
+
+    def _default_csv_output_path(self) -> str:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        qasm_stem = Path(self.qasm_file).stem
+        backend = self._slugify(self.backend_name)
+        method = self._slugify(self.opt_method)
+        return f"optimizer_eval_{backend}_{method}_{qasm_stem}_{timestamp}.csv"
+
+    @staticmethod
+    def _slugify(text: str) -> str:
+        out = []
+        for ch in str(text):
+            out.append(ch if ch.isalnum() else "_")
+        slug = "".join(out)
+        while "__" in slug:
+            slug = slug.replace("__", "_")
+        return slug.strip("_").lower()
 
     def map_discrete(self, x):
-        """
-        Simple function to map continuous values from optimization space to the nearest valid discrete values.
-
-        :param x: List of continuous values from optimization.
-        :return: Dictionary of mapped discrete parameters.
-        """
         discrete_params = {}
         for i, param in enumerate(self.optimization_params):
             valid_values = self.valid_params.get(param, [])
             if valid_values:
-                discrete_params[param] = valid_values[int(np.clip(np.round(x[i] * (len(valid_values) - 1)), 0, len(valid_values) - 1))]
+                idx = int(np.clip(np.round(x[i] * (len(valid_values) - 1)), 0, len(valid_values) - 1))
+                discrete_params[param] = valid_values[idx]
         return discrete_params
 
     def map_discrete_with_encoding(self, x):
-        """
-        Maps continuous values from optimization space to the nearest valid discrete values.
-        This is done by selecting the nearest point in the given set.
-        Here, we record the difference (or distance) for potential margin correction.
-
-        :param x: List of continuous values from optimization.
-        :return: A tuple: (mapped_parameters, distances) - Dictionary of mapped discrete parameters and distances for margin correction
-        """
         discrete_params = {}
         distances = {}
         for i, param in enumerate(self.optimization_params):
             valid_values = self.valid_params.get(param, [])
             if valid_values:
-                # Index on the continuous scale:
                 idx = int(np.clip(np.round(x[i] * (len(valid_values) - 1)), 0, len(valid_values) - 1))
                 mapped_value = valid_values[idx]
                 discrete_params[param] = mapped_value
-                # Distance between x[i] (scaled) and the chosen index (normalized difference)
                 distances[param] = abs(x[i] * (len(valid_values) - 1) - idx)
         return discrete_params, distances
 
-    def _make_cache_key(self, params_dict):
-        """
-        Creates a stable cache key from already discretized backend parameters.
-
-        :param params_dict: Dictionary with discrete backend parameters.
-        :return: Hashable key for evaluation cache.
-        """
-        # cache by discrete parameters, because different continuous points can map to the same backend configuration.
-        return tuple(sorted(params_dict.items()))
-
     def apply_margin_correction(self, es, solutions, distances, margin_threshold=0.1):
-        """
-        Applies margin correction to the covariance matrix for discrete parameters.
-        For each parameter, the method computes the standardized distance and the marginal
-        probability. If the marginal probability falls below the margin_threshold, the covariance
-        matrix is adjusted to increase the likelihood of sampling neighboring discrete values.
-
-        :param es: The CMA-ES object with attributes es.C and es.sigma.
-        :param solutions: Candidate solutions used for iterating over distances.
-        :param distances: List of dictionaries with distances for each parameter from the encoding.
-        :param margin_threshold: The probability threshold below which correction is applied.
-        :return: Updated CMA-ES object with corrected covariance matrix.
-        """
         from scipy.stats import norm
+
         dim = len(self.optimization_params)
-        sigma = es.sigma  # current step size
+        sigma = es.sigma
         for _, dist in zip(solutions, distances):
             for param, d in dist.items():
                 param_index = self.optimization_params.index(param)
-                # Only consider applying correction if d > margin_threshold to avoid unnecessary updates.
                 if d > margin_threshold:
-                    # Compute the standard deviation along the dimension.
                     sigma_j = np.sqrt(es.C[param_index, param_index]) * sigma
                     if sigma_j == 0:
-                        continue  # avoid division by zero
-                    # Standardize the distance.
+                        continue
                     d_std = d / sigma_j
-                    # Compute the marginal probability for this parameter.
                     p = norm.cdf(-d_std)
-                    # If the probability is below the threshold, calculate correction.
                     if p < margin_threshold:
                         gamma_alpha = norm.ppf(1 - margin_threshold)
-                        if d_std != 0:
-                            factor = (d_std**2 - gamma_alpha**2) / (d_std**2 * gamma_alpha**2)
-                        else:
-                            factor = 0
-                        # Create a unit vector for the parameter's direction.
+                        factor = 0 if d_std == 0 else (d_std**2 - gamma_alpha**2) / (d_std**2 * gamma_alpha**2)
                         xi = np.zeros(dim)
                         xi[param_index] = 1.0
-                        # Update the covariance matrix.
                         es.C += factor * np.outer(xi, xi)
         return es
 
+    def _ensure_mimiq_backend_env_on_path(self):
+        if not self._use_persistent_mimiq:
+            return
+
+        env_info = self.plugin_manager.envs[self.backend_name]
+        env_root = os.path.join(constants.PLUGIN, "venv", env_info["venv_name"])
+        env_root = os.path.abspath(env_root)
+
+        candidates = glob.glob(os.path.join(env_root, "lib", "python*", "site-packages"))
+        if not candidates:
+            raise RuntimeError(f"Could not locate site-packages inside backend venv: {env_root}")
+
+        site_packages = candidates[0]
+        if site_packages not in sys.path:
+            sys.path.insert(0, site_packages)
+
+        current_pythonpath = os.environ.get("PYTHONPATH", "")
+        paths = [p for p in current_pythonpath.split(os.pathsep) if p]
+        if site_packages not in paths:
+            os.environ["PYTHONPATH"] = (
+                site_packages if not current_pythonpath else site_packages + os.pathsep + current_pythonpath
+            )
+
+    def _run_backend_once(self, params_dict: Dict[str, object]) -> Tuple[float, float]:
+        if self._use_persistent_mimiq:
+            self._ensure_mimiq_backend_env_on_path()
+            from feniqs_lib.backends.quantum_backends.mimiq_julia_backend import MimiqJuliaCpuBackend
+            from feniqs_lib.backends.task.task import run_task
+
+            if self._persistent_backend is None:
+                self._persistent_backend = MimiqJuliaCpuBackend(
+                    test_case=self.qasm_file,
+                    nb_shots=1000,
+                    seed=1234,
+                    **params_dict,
+                )
+            else:
+                self._persistent_backend.reconfigure(
+                    nb_shots=1000,
+                    seed=1234,
+                    **params_dict,
+                )
+
+            _, metrics, _ = run_task(self._persistent_backend)
+            runtime = float(metrics["total"])
+            fidelity = float(metrics["fidelity"])
+            return runtime, fidelity
+
+        metrics, _ = self.plugin_manager.run_backend(
+            self.backend_name,
+            self.qasm_file,
+            nb_shots=1000,
+            **params_dict,
+        )
+        runtime = float(metrics["total"]["avg_rt"])
+        fidelity = float(metrics["fidelity"]["avg_rt"])
+        return runtime, fidelity
+
+    def _record_evaluation(self, params_dict: Dict[str, object], runtime: float, fidelity: float, objective_runtime: float):
+        row = {
+            "qasm_path": self.qasm_file,
+            "runtime": float(runtime),
+            "fidelity": float(fidelity),
+            "is_best": False,
+            "_objective_runtime": float(objective_runtime),
+        }
+        for param in self.optimization_params:
+            row[param] = params_dict.get(param)
+        self._evaluation_rows.append(row)
+
+    def _select_best_row_index(self) -> Optional[int]:
+        if not self._evaluation_rows:
+            return None
+
+        feasible = [
+            (idx, row)
+            for idx, row in enumerate(self._evaluation_rows)
+            if row.get("fidelity") is not None and float(row["fidelity"]) >= CMA_FIDELITY_ACCURACY
+        ]
+        if feasible:
+            return min(feasible, key=lambda item: (float(item[1]["runtime"]), -float(item[1]["fidelity"]), item[0]))[0]
+
+        return min(
+            enumerate(self._evaluation_rows),
+            key=lambda item: (-float(item[1]["fidelity"]), float(item[1]["runtime"]), item[0]),
+        )[0]
+
+    def finalize_results(self):
+        self._best_row_index = self._select_best_row_index()
+        for idx, row in enumerate(self._evaluation_rows):
+            row["is_best"] = idx == self._best_row_index
+
+    def get_evaluation_rows(self) -> List[Dict[str, object]]:
+        clean_rows = []
+        for row in self._evaluation_rows:
+            clean_row = {k: v for k, v in row.items() if not k.startswith("_")}
+            clean_rows.append(clean_row)
+        return clean_rows
+
+    def get_best_evaluation(self) -> Optional[Dict[str, object]]:
+        if self._best_row_index is None:
+            self.finalize_results()
+        if self._best_row_index is None:
+            return None
+        row = self._evaluation_rows[self._best_row_index]
+        return {k: v for k, v in row.items() if not k.startswith("_")}
+
+    def write_evaluations_csv(self, output_path: Optional[str] = None) -> str:
+        if self._best_row_index is None:
+            self.finalize_results()
+
+        output_path = output_path or self.csv_output_path
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+
+        fieldnames = ["qasm_path", "runtime", "fidelity", *self.optimization_params, "is_best"]
+        with open(output_path, "w", newline="") as file:
+            writer = csv.DictWriter(file, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in self.get_evaluation_rows():
+                writer.writerow(row)
+
+        logger.info("Saved evaluation CSV to %s", output_path)
+        return output_path
+
     def execute_with_params(self, params):
-        """
-        Executes the quantum simulation with given parameters **multiple times** and averages the results.
-
-        :param params: List of parameters in continuous form.
-        :return: (Avg Runtime, Avg Fidelity)
-        """
         params_dict = self.map_discrete(params)
-
-        # use the mapped discrete parameters as the cache identity.
-        cache_key = self._make_cache_key(params_dict)
-
-        # if the same discrete setup was already evaluated, reuse it and avoid a backend call.
-        if cache_key in self.evaluation_cache:
-            self.cache_hit_count += 1
-            logger.info(f"[CACHE HIT] Params: {params_dict}")
-            return self.evaluation_cache[cache_key]
 
         total_runtime = 0.0
         total_fidelity = 0.0
 
-        for _ in range(self.num_evaluations):  # Running multiple times to average noisy results
+        for _ in range(self.num_evaluations):
             try:
-                # this counter tracks only real backend executions.
-                self.backend_call_count += 1
-
-                metrics, _ = self.plugin_manager.run_backend(
-                    self.backend_name, self.qasm_file, nb_shots=1000, **params_dict
-                )
-
-                # validate metric fields explicitly to avoid silently propagating bad values.
-                runtime = metrics["total"]["avg_rt"]
-                fidelity = metrics["fidelity"]["avg_rt"]
-
-                if runtime is None or fidelity is None:
-                    raise ValueError(f"Received invalid metrics: runtime={runtime}, fidelity={fidelity}")
-
+                runtime, fidelity = self._run_backend_once(params_dict)
             except Exception as e:
-                logger.warning(
-                    f"Execution failed for {params_dict}. "
-                    f"Penalty will be returned but not cached. Error: {e}"
-                )
+                logger.warning(f"Execution failed for {params_dict}. Assigning high penalty. Error: {e}")
+                self._record_evaluation(params_dict, runtime=1e6, fidelity=-1.0, objective_runtime=1e6)
                 return 1e6, -1
 
             total_runtime += runtime
@@ -227,188 +299,81 @@ class FeniqsOptimizer:
         avg_runtime = total_runtime / self.num_evaluations
         avg_fidelity = total_fidelity / self.num_evaluations
 
-        # Print evaluated parameters and results
-        logger.info(f"**Params: {params_dict} → Fidelity: {avg_fidelity:.5f}, Avg Runtime: {avg_runtime:.2f} s**")
+        objective_runtime = avg_runtime
+        if self.opt_method == "cmaes" and avg_fidelity < CMA_FIDELITY_ACCURACY:
+            objective_runtime = 1e6
 
-        result = (avg_runtime, avg_fidelity)
+        self._record_evaluation(
+            params_dict=params_dict,
+            runtime=avg_runtime,
+            fidelity=avg_fidelity,
+            objective_runtime=objective_runtime,
+        )
 
-        # cache only successful evaluations.
-        self.evaluation_cache[cache_key] = result
+        logger.info(
+            "Params: %s → Fidelity: %.5f, Avg Runtime: %.6f s",
+            params_dict,
+            avg_fidelity,
+            avg_runtime,
+        )
 
-        return result
+        return objective_runtime, avg_fidelity
 
     def optimize(self, max_generations=10, population_size=10):
-        """
-        Runs the selected optimization algorithm.
-
-        :param max_generations: Number of iterations.
-        :param population_size: Population size per generation.
-        :return: Optimized parameters as a dictionary.
-        """
         if self.opt_method == "cmaes":
-            return self._optimize_cmaes(max_generations, population_size)
+            result = self._optimize_cmaes(max_generations, population_size)
         elif self.opt_method in ["moead", "nsga2"]:
-            return self._optimize_moo(max_generations, population_size)
+            result = self._optimize_moo(max_generations, population_size)
+        else:
+            raise ValueError(f"Unsupported optimization method: {self.opt_method}")
+
+        self.finalize_results()
+        self.write_evaluations_csv(self.csv_output_path)
+        return result
 
     def _optimize_cmaes(self, max_generations, population_size):
-        """
-        CMA-ES optimization (minimizes runtime while enforcing fidelity constraint).
-        Incorporates sample encoding and margin correction steps, and saves per-generation
-        results to a CSV file.
-        """
-        x0 = [0.5] * len(self.optimization_params)  # Start in the middle
-        sigma0 = 0.2  # Initial search radius
+        x0 = [0.5] * len(self.optimization_params)
+        sigma0 = 0.2
 
-        # direct evaluation loop is used instead of ConstrainedFitnessAL so runtime/fidelity are computed once per candidate.
-        # NoiseHandler is intentionally not used here to keep the number of backend calls predictable.
+        def constraints(x):
+            _, fidelity = self.execute_with_params(x)
+            return [CMA_FIDELITY_ACCURACY - fidelity]
 
-        es = cma.CMAEvolutionStrategy(x0, sigma0, {
-            "maxiter": max_generations,
-            "popsize": population_size,
-            "tolx": 1e-5,
-            "tolfun": 1e-4,
-        })
+        cfun = cma.ConstrainedFitnessAL(lambda x: self.execute_with_params(x)[0], constraints)
+        nh = cma.NoiseHandler(len(x0), [2, 5, 10])
 
-        # Prepare to store generation results in a CSV file
-        results = []
-        filename = f"cmaes_res_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        es = cma.CMAEvolutionStrategy(
+            x0,
+            sigma0,
+            {
+                "maxiter": max_generations,
+                "popsize": population_size,
+                "tolx": 1e-5,
+                "tolfun": 1e-4,
+            },
+        )
 
-        with open(filename, 'a+', newline='') as file:
-            writer = csv.writer(file)
-            writer.writerow(["Generation", "Best Runtime", "Best Fidelity", "Best Parameters"])
-
-        gen = 0
         while not es.stop():
-            # ask for candidate solutions once per generation.
-            solutions = es.ask()
+            solutions, fit_vals = es.ask_and_eval(cfun, evaluations=nh.evaluations)
 
-            fit_vals = []
             all_distances = []
-            evaluated_results = []
-
-            # evaluate each candidate exactly once and reuse fidelity for the constraint penalty.
             for sol in solutions:
-                runtime, fidelity = self.execute_with_params(sol)
-                evaluated_results.append((runtime, fidelity))
-
-                if fidelity < 0:
-                    # backend failed, assign a very large penalty.
-                    penalized_runtime = 1e9
-                elif fidelity < CMA_FIDELITY_ACCURACY:
-                    penalized_runtime = 1e6 + (CMA_FIDELITY_ACCURACY - fidelity) * 1e6
-                else:
-                    penalized_runtime = runtime
-
-                fit_vals.append(penalized_runtime)
-
-                # Apply the new sample encoding and record distances for margin correction.
                 _, dist = self.map_discrete_with_encoding(sol)
                 all_distances.append(dist)
 
-            # Safety check: CMA-ES requires one fitness value per solution.
-            if len(fit_vals) != len(solutions):
-                raise RuntimeError(
-                    f"Internal error: len(fit_vals)={len(fit_vals)} != len(solutions)={len(solutions)}"
-                )
-
-            # Apply margin correction based on the recorded distances.
             es = self.apply_margin_correction(es, solutions, all_distances, margin_threshold=0.1)
-
             es.tell(solutions, fit_vals)
-
-            # choose the best solution of this generation from the already computed values.
-            best_idx = int(np.argmin(fit_vals))
-            best_runtime, best_fidelity = evaluated_results[best_idx]
-            best_params, _ = self.map_discrete_with_encoding(solutions[best_idx])
-
-            results.append((gen, best_runtime, best_fidelity, best_params))
-
-            with open(filename, 'a', newline='') as file:
-                writer = csv.writer(file)
-                writer.writerow([gen, best_runtime, best_fidelity, best_params])
-
-            gen += 1
             es.disp()
 
-        # Final best solution.
         best_params, _ = self.map_discrete_with_encoding(es.result.xbest)
-        best_runtime, best_fidelity = self.execute_with_params(es.result.xbest)
-        results.append(("Final", best_runtime, best_fidelity, best_params))
-
-        with open(filename, 'a', newline='') as file:
-            writer = csv.writer(file)
-            writer.writerow(["Final", best_runtime, best_fidelity, best_params])
-
+        best_runtime = es.result.fbest
         print(f"\n**Final Best Parameters: {best_params}**")
-        print(f"\n**Best Runtime Achieved: {best_runtime:.2f} s**")
-        print(f"\n**Best Fidelity Achieved: {best_fidelity:.5f}**")
-        print(f"\n**Real backend calls: {self.backend_call_count}**")
-        print(f"**Cache hits: {self.cache_hit_count}**")
-        print(f"**Cached evaluations stored: {len(self.evaluation_cache)}**")
-
+        print(f"\n**Best Runtime Achieved: {best_runtime:.6f} s**")
         return best_params
 
     def _optimize_moo(self, max_generations, population_size):
-        """
-        Multi-objective optimization (MOEA/D, NSGA-II).
-        Minimizes runtime and maximizes fidelity as independent objectives.
-
-        ### MOEA/D and NSGA-II Parameter Explanation
-
-        #### MOEA/D Parameters:
-        MOEA/D (Multi-Objective Evolutionary Algorithm based on Decomposition),
-        where different objectives (e.g., minimizing runtime while maximizing fidelity) are optimized simultaneously.
-
-        - **ref_dirs (`get_reference_directions("das-dennis", 2, n_partitions=12)`)**:
-            - Defines **reference directions** for decomposition-based optimization.
-            - `"das-dennis"` refers to the **Das and Dennis method**, which distributes reference points in the objective space.
-            - `2`: Specifies that we have **two objectives** (runtime and fidelity).
-            - `n_partitions=12`: Controls the **granularity** of reference directions. Higher values mean finer divisions, more diversity.
-              If MOEA/D fails due to bad reference directions, try increasing/decreasing `n_partitions`.
-
-        - **Alternative reference direction methods**:
-            - `"uniform"`: Generates uniformly distributed reference directions.
-            - `"energy"`: Uses an energy-based approach for better performance in some cases.
-
-        - **How to Choose the Right Reference Directions?**
-            - If **solutions are poorly spread**, **increase** `n_partitions` to improve diversity.
-            - If **too many solutions cluster together**, **reduce** `n_partitions`.
-
-        - **Performance Indicators for MOEA/D (`indicator="eps"` or `"hv"`)**:
-            - **"eps" (Epsilon Indicator)**:
-              - Measures how much one solution must be improved to **dominate another**.
-              - Works well when we need **fine control over convergence**.
-            - **"hv" (Hypervolume Indicator)**:
-              - Measures the **size of the dominated space** in objective space.
-              - Good for problems where Pareto fronts are complex and need wider exploration.
-
-        #### NSGA-II Parameters:
-        NSGA-II (Non-dominated Sorting Genetic Algorithm) is an **elitist, fast sorting genetic algorithm** that does not require
-        decomposition like MOEA/D. Instead, it uses **Pareto dominance** and crowding distance sorting.
-
-        - **pop_size (population size)**:
-            - Defines the **number of candidate solutions** in each generation.
-            - A larger population **increases diversity** but **slows down convergence**.
-            - Typically, **higher population sizes (50-200)** work better for **complex multi-objective problems**.
-
-         - **Crossover Operators (Recombination)**
-          - `"SBX"` (Simulated Binary Crossover): `SBX(prob=0.9, eta=15)`
-            - `prob=0.9` → Crossover probability.
-            - `eta=15` → Distribution index (higher values create offspring closer to parents).
-
-        - **Mutation Operators**
-          - `"Polynomial Mutation"`: `PM(prob=1.0/n_var, eta=20)`
-            - `prob=1.0/n_var` → Each variable has `1/n_var` probability to mutate.
-            - `eta=20` → Controls mutation spread (higher values lead to smaller changes).
-
-        - **When to Use MOEA/D vs. NSGA-II?**
-            - MOEA/D if understand problem structure is clear and can design good reference directions.
-            - NSGA-II if the problem is complex and needs general Pareto-based optimization.
-            - MOEA/D is faster when properly tuned, but NSGA-II can be more robust for diverse problems.
-        """
         problem = QuantumOptimizationProblem(self)
 
-        # Ensure reference directions are properly generated for MOEA/D
         if self.opt_method == "moead":
             try:
                 ref_dirs = get_reference_directions("das-dennis", 2, n_partitions=24)
@@ -419,15 +384,12 @@ class FeniqsOptimizer:
             if ref_dirs is None or len(ref_dirs) == 0:
                 raise ValueError("Reference directions for MOEA/D could not be generated. Try adjusting 'n_partitions'.")
 
-            algorithm = MOEAD(
-                ref_dirs=ref_dirs
-            )
+            algorithm = MOEAD(ref_dirs=ref_dirs)
         else:
             crossover_operator = SBX(prob=0.9, eta=1)
-            mutation_operator = PM(prob=1.0/problem.n_var, eta=2)
+            mutation_operator = PM(prob=1.0 / problem.n_var, eta=2)
             algorithm = NSGA2(pop_size=population_size, crossover=crossover_operator, mutation=mutation_operator)
 
-        # Callback function to log each generation
         class GenerationLogger:
             def __init__(self, optimizer_name, max_gens):
                 self.generation = 0
@@ -436,81 +398,45 @@ class FeniqsOptimizer:
 
             def __call__(self, algorithm):
                 self.generation += 1
-                logger.info(f" Generation {self.generation}/{self.max_gens} completed for {self.optimizer_name.upper()}.")
+                logger.info("Generation %s/%s completed for %s.", self.generation, self.max_gens, self.optimizer_name.upper())
 
-        # Instantiate the generation logger
         generation_callback = GenerationLogger(self.opt_method, max_generations)
 
-        # Run multi-objective optimization with generation logging
-        logger.info(f" Starting {self.opt_method.upper()} optimization with {max_generations} generations...")
+        logger.info("Starting %s optimization with %s generations...", self.opt_method.upper(), max_generations)
         res = minimize(
-            problem, algorithm, get_termination("n_gen", max_generations),
-            verbose=True, callback=generation_callback
+            problem,
+            algorithm,
+            get_termination("n_gen", max_generations),
+            verbose=True,
+            callback=generation_callback,
         )
 
-        # Save all Pareto front solutions
         self._save_pareto_front(res.F, res.X)
-
-        # Return the full Pareto front instead of just one solution
         return [self.map_discrete(solution) for solution in res.X]
 
     def _save_pareto_front(self, fitness_values, parameter_solutions):
-        """
-        Saves only the final Pareto front for MOEA/D and NSGA-II.
-        """
-        algo_name = self.opt_method.upper()  # To distinguish MOEA/D vs NSGA-II results
+        algo_name = self.opt_method.upper()
         filename = f"pareto_res_{algo_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
-        with open(filename, 'w', newline='') as file:
+        with open(filename, "w", newline="") as file:
             writer = csv.writer(file)
             writer.writerow(["Runtime", "Fidelity", "Parameters"])
 
             for fitness, params in zip(fitness_values, parameter_solutions):
-                if not np.isfinite(fitness[0]) or not np.isfinite(fitness[1]):  # Avoid NaN/inf values
+                if not np.isfinite(fitness[0]) or not np.isfinite(fitness[1]):
                     continue
                 runtime, neg_fidelity = fitness
-                fidelity = -neg_fidelity  # Restore fidelity to positive value
+                fidelity = -neg_fidelity
                 writer.writerow([runtime, fidelity, self.map_discrete(params)])
 
-            logger.info(f" Pareto front results saved to {filename}")
+        logger.info("Pareto front results saved to %s", filename)
 
 
 class QuantumOptimizationProblem(Problem):
-    """
-    Wrapper for MOEA/D and NSGA-II.
-    This problem is multi-objective:
-    - Objective 1: Minimize Runtime
-    - Objective 2: Maximize Fidelity (converted to minimization)
-    """
     def __init__(self, optimizer):
         super().__init__(n_var=len(optimizer.optimization_params), n_obj=2, xl=0, xu=1)
         self.optimizer = optimizer
 
-    # def _evaluate(self, x, out, *args, **kwargs):
-    #     """
-    #     Evaluation function for multi-objective optimization.
-    #     - Runtime should be minimized.
-    #     - Fidelity should be maximized, so we use `-fidelity` to convert it to minimization.
-    #     - Solutions with fidelity < 0.99 are penalized by adding a constraint.
-    #     """
-    #     results = [self.optimizer.execute_with_params(xi) for xi in x]
-    #
-    #     # Extract runtime and fidelity
-    #     runtimes = [r for r, f in results]
-    #     fidelities = [f for r, f in results]
-    #
-    #     # Convert fidelity to minimization (-fidelity)
-    #     out["F"] = np.column_stack([runtimes, -np.array(fidelities)])
-    #
-    #     # Constraint: Fidelity should be >= 0.99 (Negative values mean constraint violation)
-    #     out["G"] = np.array([0.9999 - f for f in fidelities])
     def _evaluate(self, x, out, *args, **kwargs):
-        """
-        Evaluation function for multi-objective optimization.
-        - Runtime should be minimized.
-        - Fidelity should be maximized, so we use `-fidelity` to convert it to minimization.
-        """
         results = [self.optimizer.execute_with_params(xi) for xi in x]
-
-        # Convert fidelity to minimization (-fidelity)
         out["F"] = np.array([[runtime, -fidelity] for runtime, fidelity in results])
