@@ -1,17 +1,5 @@
 #
 # Copyright © 2026 QPerfect. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
@@ -21,39 +9,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from .config import QASM_PATH_COL
-
-
-def _infer_family_from_path(path: str) -> str:
-    s = str(path).replace('\\', '/')
-    stem = s.split('/')[-1]
-    if stem.lower().endswith('.qasm'):
-        stem = stem[:-5]
-    parts = stem.split('_')
-    if len(parts) >= 3 and parts[-1].isdigit():
-        return '_'.join(parts[:-2]).lower()
-    if len(parts) >= 2 and parts[-1].isdigit():
-        return '_'.join(parts[:-1]).lower()
-    return parts[0].lower() if parts else 'unknown'
-
-
-def _normalize_default_df(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    colmap = {}
-    for c in out.columns:
-        cl = c.lower()
-        if c == 'qasm_path':
-            colmap[c] = 'qasm_path'
-        elif cl in {'runtime', 'time_taken', 'run_time', 'execution_time', 'elapsed_time'}:
-            colmap[c] = 'runtime_default'
-        elif cl in {'fidelity', 'state_fidelity', 'final_fidelity'}:
-            colmap[c] = 'fidelity_default'
-        elif cl == 'family':
-            colmap[c] = 'family'
-    out = out.rename(columns=colmap)
-    if 'family' not in out.columns:
-        out['family'] = out['qasm_path'].astype(str).map(_infer_family_from_path)
-    return out[['qasm_path', 'family', 'runtime_default', 'fidelity_default']].copy()
+from .backend import normalize_backend_df, infer_family_from_path
+from .config import QASM_PATH_COL, CANDIDATE_COLS
 
 
 def _styled(ax, title: str, xlabel: str, ylabel: str):
@@ -65,13 +22,174 @@ def _styled(ax, title: str, xlabel: str, ylabel: str):
     ax.spines['right'].set_visible(False)
 
 
-def compare_predicted_vs_default(pred_top1: pd.DataFrame, default_csv: str | Path, outdir: str | Path):
+def _normalize_default_df(df: pd.DataFrame, backend: str = 'auto') -> pd.DataFrame:
+    """Normalize a default-results CSV.
+
+    Default baseline files are allowed to be *minimal* and contain only
+    qasm_path/runtime/fidelity (plus optional family). They do not need the
+    backend hyperparameter columns.
+
+    If candidate columns are present we keep them, but we never require them.
+    This is important for Mimiq, where the default CSV often stores only the
+    baseline measurements.
+    """
+    out = df.copy()
+
+    # First try the full backend normalization only when the dataframe appears
+    # to actually contain backend parameter columns. Otherwise keep the minimal
+    # schema and normalize only the baseline fields.
+    candidate_markers = set(CANDIDATE_COLS) | {
+        'matrix_product_state_max_bond_dimension',
+        'matrix_product_state_truncation_threshold',
+        'mps_lapack',
+        'mps_sample_measure_algorithm',
+        'bond_dimension',
+        'entdim',
+        'scut',
+        'meth',
+        'method',
+        'sample_algorithm',
+    }
+    if len(candidate_markers.intersection(out.columns)) > 0:
+        out = normalize_backend_df(out, backend=backend)
+    else:
+        # Minimal baseline CSV path. Keep this deliberately permissive.
+        rename_map = {}
+        for c in out.columns:
+            cl = c.lower().strip()
+            if c == 'qasm_path':
+                rename_map[c] = 'qasm_path'
+            elif cl in {'runtime', 'eval_runtime', 'default_runtime', 'run_time', 'execution_time', 'elapsed_time'}:
+                rename_map[c] = 'runtime'
+            elif cl in {'fidelity', 'eval_fidelity', 'default_fidelity', 'state_fidelity', 'final_fidelity'}:
+                rename_map[c] = 'fidelity'
+            elif cl == 'heldout_family':
+                rename_map[c] = 'family'
+        out = out.rename(columns=rename_map)
+        if 'family' not in out.columns and 'qasm_path' in out.columns:
+            out['family'] = out['qasm_path'].astype(str).map(infer_family_from_path)
+
+    if 'qasm_path' not in out.columns:
+        raise ValueError('default-csv must contain qasm_path')
+    if 'runtime_default' not in out.columns:
+        if 'runtime' in out.columns:
+            out['runtime_default'] = out['runtime']
+        else:
+            raise ValueError('default-csv must contain runtime or runtime_default')
+    if 'fidelity_default' not in out.columns:
+        if 'fidelity' in out.columns:
+            out['fidelity_default'] = out['fidelity']
+        else:
+            raise ValueError('default-csv must contain fidelity or fidelity_default')
+    if 'family' not in out.columns:
+        out['family'] = out['qasm_path'].astype(str).map(infer_family_from_path)
+
+    cols = ['qasm_path', 'family', 'runtime_default', 'fidelity_default']
+    for c in CANDIDATE_COLS:
+        if c in out.columns:
+            cols.append(c)
+    out = out[cols].copy()
+    out = out.dropna(subset=['qasm_path', 'runtime_default', 'fidelity_default'])
+    out = out.drop_duplicates(subset=['qasm_path'], keep='first')
+    return out
+
+
+def _truthy_mask(series: pd.Series) -> pd.Series:
+    if series.dtype == bool:
+        return series.fillna(False)
+    vals = series.astype('string').str.strip().str.lower()
+    return vals.isin(['true', '1', 'yes', 'y', 't'])
+
+
+def _parse_scalar(value: str):
+    s = str(value).strip()
+    low = s.lower()
+    if low in {'true', 'false'}:
+        return low == 'true'
+    try:
+        if any(ch in s for ch in ['.', 'e', 'E']):
+            return float(s)
+        return int(s)
+    except ValueError:
+        return s
+
+
+def _parse_default_filter(default_filter: str | None) -> dict[str, object]:
+    if default_filter is None:
+        return {}
+    filt = {}
+    for part in str(default_filter).split(','):
+        part = part.strip()
+        if not part:
+            continue
+        if '=' not in part:
+            raise ValueError(f"Invalid --default-filter fragment {part!r}. Expected key=value.")
+        key, val = part.split('=', 1)
+        filt[key.strip()] = _parse_scalar(val)
+    return filt
+
+
+def derive_default_rows(source_csv: str | Path, backend: str = 'auto', default_filter: str | None = None) -> pd.DataFrame:
+    full = normalize_backend_df(pd.read_csv(source_csv), backend=backend)
+
+    if 'is_default' in full.columns:
+        mask = _truthy_mask(full['is_default'])
+        dflt = full.loc[mask].copy()
+        if not dflt.empty:
+            return _normalize_default_df(dflt, backend=backend)
+
+    filt = _parse_default_filter(default_filter)
+    if filt:
+        dflt = full.copy()
+        for key, expected in filt.items():
+            if key not in dflt.columns:
+                raise ValueError(f"Default filter references missing column {key!r}. Available columns: {sorted(dflt.columns)}")
+            col = dflt[key]
+            if pd.api.types.is_numeric_dtype(col):
+                dflt = dflt[col == pd.to_numeric(expected, errors='coerce')]
+            else:
+                dflt = dflt[col.astype('string') == str(expected)]
+        if dflt.empty:
+            raise ValueError('Default filter matched zero rows in full-eval-csv.')
+        # keep best matching row per circuit using fastest runtime, then best fidelity tie-break
+        if {'runtime', 'fidelity'}.issubset(dflt.columns):
+            dflt = (
+                dflt.sort_values([QASM_PATH_COL, 'runtime', 'fidelity'], ascending=[True, True, False])
+                .groupby(QASM_PATH_COL, as_index=False)
+                .first()
+            )
+        return _normalize_default_df(dflt, backend=backend)
+
+    raise ValueError(
+        'No default baseline could be derived automatically. '
+        'Provide --default-csv, or add an is_default column to full-eval-csv, '
+        'or pass --default-filter with a canonical tuple such as '
+        'bond_dimension=64,entdim=8,opt_level=1,method=zipup or '
+        'sample_algorithm=mps_probabilities.'
+    )
+
+
+def compare_predicted_vs_default(
+    pred_top1: pd.DataFrame,
+    default_csv: str | Path | None,
+    outdir: str | Path,
+    backend: str = 'auto',
+    full_eval_csv: str | Path | None = None,
+    default_filter: str | None = None,
+):
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
     pred = pred_top1[[QASM_PATH_COL, 'family', 'eval_runtime', 'eval_fidelity']].copy()
     pred = pred.rename(columns={'eval_runtime': 'runtime_pred', 'eval_fidelity': 'fidelity_pred'})
     pred = pred.groupby([QASM_PATH_COL, 'family'], as_index=False).median(numeric_only=True)
-    dflt = _normalize_default_df(pd.read_csv(default_csv))
+
+    if default_csv is not None:
+        dflt = _normalize_default_df(pd.read_csv(default_csv), backend=backend)
+    elif full_eval_csv is not None:
+        dflt = derive_default_rows(full_eval_csv, backend=backend, default_filter=default_filter)
+    else:
+        raise ValueError('Either default_csv or full_eval_csv must be provided for default comparison.')
+
     dflt = dflt.groupby([QASM_PATH_COL, 'family'], as_index=False).median(numeric_only=True)
     merged = pred.merge(dflt[[QASM_PATH_COL, 'runtime_default', 'fidelity_default']], on=QASM_PATH_COL, how='inner')
     if merged.empty:
@@ -139,20 +257,6 @@ def compare_predicted_vs_default(pred_top1: pd.DataFrame, default_csv: str | Pat
     ax.axhline(1.0, linestyle='--', color='black', linewidth=1)
     _styled(ax, 'Median speedup vs default by family', 'Family', 'Median speedup')
     ax.tick_params(axis='x', rotation=45)
-    fig.tight_layout(); fig.savefig(out / 'family_median_speedup.png', bbox_inches='tight', dpi=240); plt.close(fig)
-
-    families = list(merged.groupby('family')['runtime_ratio_vs_default'].median().sort_values().index)
-    data = [merged.loc[merged['family'] == fam, 'runtime_ratio_vs_default'].to_numpy(float) for fam in families]
-    fig, ax = plt.subplots(figsize=(11, 5.8))
-    parts = ax.violinplot(data, showmeans=False, showmedians=False, showextrema=False)
-    for pc in parts['bodies']:
-        pc.set_alpha(0.55)
-    ax.boxplot(data, positions=np.arange(1, len(families) + 1), widths=0.18, patch_artist=False, showfliers=True)
-    ax.axhline(1.0, linestyle='--', color='black', linewidth=1)
-    ax.set_xticks(np.arange(1, len(families) + 1))
-    ax.set_xticklabels(families, rotation=45, ha='right')
-    ax.set_yscale('log')
-    _styled(ax, 'Runtime ratio vs default by family', 'Family', 'Predicted/default runtime ratio')
-    fig.tight_layout(); fig.savefig(out / 'family_runtime_ratio_violin.png', bbox_inches='tight', dpi=240); plt.close(fig)
+    fig.tight_layout(); fig.savefig(out / 'speedup_by_family.png', bbox_inches='tight', dpi=240); plt.close(fig)
 
     return merged

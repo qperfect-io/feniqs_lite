@@ -170,6 +170,7 @@ def extract_qasm_features(qasm: str) -> Dict[str, float]:
     first_touch = [None] * int(n_total); last_touch = [None] * int(n_total)
     control_use = Counter(); target_use = Counter(); qubit_as_control = Counter(); qubit_as_target = Counter()
     gate_positions = []; phase_positions = []; pair_seq = []; late_twoq_hits = 0
+    twoq_layer_counts = Counter(); twoq_positions = []
     angle_abs = []; theta_vals = []; phi_vals = []; lam_vals = []; angle_bins = Counter(); power2_angles = 0; small_angles = 0; signed_angles = []
     param_gate_count = 0
 
@@ -263,6 +264,9 @@ def extract_qasm_features(qasm: str) -> Dict[str, float]:
                     edge_counts[(a,b)] += 1; pair_counts[(a,b)] += 1; pair_seq.append((a,b))
                     if len(pair_seq) >= 2: pair_bigrams[(pair_seq[-2], pair_seq[-1])] += 1
         level = 1 + max((line_end[q] for q in uniq_qbs), default=0)
+        if len(uniq_qbs) >= 2:
+            twoq_layer_counts[level] += 1
+            twoq_positions.append(pos)
         for q in uniq_qbs:
             line_end[q] = level; qubit_depth[q] += 1
             if first_touch[q] is None: first_touch[q] = level
@@ -295,6 +299,54 @@ def extract_qasm_features(qasm: str) -> Dict[str, float]:
     edge_reuse = _safe_div(total_edge_uses, float(unique_edges)) if unique_edges else 0.0
     denom = int(n_total)*(int(n_total)-1)/2 if n_total >= 2 else 0.0; edge_density = _safe_div(unique_edges, denom) if denom else 0.0
     phase_position_mean_norm = _safe_div(sum(phase_positions)/len(phase_positions) if phase_positions else 0.0, max(1, len(lines)-1))
+    twoq_position_mean_norm = _safe_div(sum(twoq_positions)/len(twoq_positions) if twoq_positions else 0.0, max(1, len(lines)-1))
+    if int(n_total) >= 2 and edge_counts:
+        unique_cut_profile = []
+        weighted_cut_profile = []
+        for cut in range(int(n_total) - 1):
+            uc = 0.0; wc = 0.0
+            for (u, v), w in edge_counts.items():
+                if u <= cut < v:
+                    uc += 1.0
+                    wc += float(w)
+            unique_cut_profile.append(uc)
+            weighted_cut_profile.append(wc)
+        unique_cut_mean = float(sum(unique_cut_profile) / len(unique_cut_profile))
+        unique_cut_max = float(max(unique_cut_profile))
+        unique_cut_std = float(_std(unique_cut_profile))
+        unique_cut_q90 = float(_quantile(unique_cut_profile, 0.9))
+        weighted_cut_mean = float(sum(weighted_cut_profile) / len(weighted_cut_profile))
+        weighted_cut_max = float(max(weighted_cut_profile))
+        weighted_cut_std = float(_std(weighted_cut_profile))
+        weighted_cut_q90 = float(_quantile(weighted_cut_profile, 0.9))
+        weighted_cut_gini = float(_gini(weighted_cut_profile))
+    else:
+        unique_cut_mean = unique_cut_max = unique_cut_std = unique_cut_q90 = 0.0
+        weighted_cut_mean = weighted_cut_max = weighted_cut_std = weighted_cut_q90 = weighted_cut_gini = 0.0
+    if circuit_depth > 0 and twoq_layer_counts:
+        layer_series = [float(twoq_layer_counts.get(lvl, 0.0)) for lvl in range(1, circuit_depth + 1)]
+        twoq_burstiness = _safe_div(_std(layer_series), sum(layer_series) / len(layer_series) if layer_series else 0.0)
+        twoq_peak_over_mean = _safe_div(max(layer_series), sum(layer_series) / len(layer_series) if layer_series else 0.0)
+        twoq_layer_gini = float(_gini(layer_series))
+        q1 = q2 = q3 = q4 = 0.0
+        for lvl, cnt in enumerate(layer_series, start=1):
+            frac = lvl / max(1.0, float(circuit_depth))
+            if frac <= 0.25:
+                q1 += cnt
+            elif frac <= 0.50:
+                q2 += cnt
+            elif frac <= 0.75:
+                q3 += cnt
+            else:
+                q4 += cnt
+        tot_twoq_layers = max(1.0, sum(layer_series))
+        twoq_q1_frac = q1 / tot_twoq_layers
+        twoq_q2_frac = q2 / tot_twoq_layers
+        twoq_q3_frac = q3 / tot_twoq_layers
+        twoq_q4_frac = q4 / tot_twoq_layers
+    else:
+        twoq_burstiness = twoq_peak_over_mean = twoq_layer_gini = 0.0
+        twoq_q1_frac = twoq_q2_frac = twoq_q3_frac = twoq_q4_frac = 0.0
     span_q50 = _quantile(span_values,0.5); span_q75=_quantile(span_values,0.75); span_q90=_quantile(span_values,0.9)
     mean_span_norm = _safe_div(mean_edge_span, max(1.0, n_total-1)); max_span_norm = _safe_div(max_edge_span, max(1.0, n_total-1)); span_q90_norm=_safe_div(span_q90,max(1.0,n_total-1))
     weighted_span_per_twoq = _safe_div(sum(abs(u-v)*w for (u,v),w in edge_counts.items()), max(1.0,total_edge_uses))
@@ -338,7 +390,10 @@ def extract_qasm_features(qasm: str) -> Dict[str, float]:
         'degree_gini': float(degree_gini), 'weighted_degree_gini': float(weighted_degree_gini), 'std_edge_span': float(std_edge_span), 'span_entropy': float(span_entropy),
         'nearest_neighbor_frac': float(nearest_neighbor_frac), 'nonlocal_frac': float(nonlocal_frac), 'ultra_nonlocal_frac': float(ultra_nonlocal_frac), 'gate_entropy': float(gate_entropy), 'gate_bigram_entropy': float(bigram_entropy), 'gate_trigram_entropy': float(trigram_entropy),
         'span_q50': float(span_q50), 'span_q75': float(span_q75), 'span_q90': float(span_q90), 'mean_span_norm': float(mean_span_norm), 'max_span_norm': float(max_span_norm), 'span_q90_norm': float(span_q90_norm), 'weighted_span_per_twoq': float(weighted_span_per_twoq),
-        'phase_position_mean_norm': float(phase_position_mean_norm), 'pair_entropy': float(pair_entropy), 'pair_bigram_entropy': float(pair_bigram_entropy), 'repeat_pair_run_frac': float(repeat_pair_run_frac),
+        'phase_position_mean_norm': float(phase_position_mean_norm), 'twoq_position_mean_norm': float(twoq_position_mean_norm), 'pair_entropy': float(pair_entropy), 'pair_bigram_entropy': float(pair_bigram_entropy), 'repeat_pair_run_frac': float(repeat_pair_run_frac),
+        'unique_cut_mean': float(unique_cut_mean), 'unique_cut_max': float(unique_cut_max), 'unique_cut_std': float(unique_cut_std), 'unique_cut_q90': float(unique_cut_q90),
+        'weighted_cut_mean': float(weighted_cut_mean), 'weighted_cut_max': float(weighted_cut_max), 'weighted_cut_std': float(weighted_cut_std), 'weighted_cut_q90': float(weighted_cut_q90), 'weighted_cut_gini': float(weighted_cut_gini),
+        'twoq_burstiness': float(twoq_burstiness), 'twoq_peak_over_mean': float(twoq_peak_over_mean), 'twoq_layer_gini': float(twoq_layer_gini), 'twoq_q1_frac': float(twoq_q1_frac), 'twoq_q2_frac': float(twoq_q2_frac), 'twoq_q3_frac': float(twoq_q3_frac), 'twoq_q4_frac': float(twoq_q4_frac),
         'control_target_imbalance': float(control_target_imbalance), 'control_gini': float(control_gini), 'target_gini': float(target_gini), 'singleton_control_frac': float(singleton_control_frac), 'singleton_target_frac': float(singleton_target_frac), 'reg_interaction_entropy': float(reg_interaction_entropy),
         'ent_activity_mean': float(ent_activity_mean), 'ent_activity_gini': float(ent_activity_gini), 'ent_activity_cv': float(ent_activity_cv), 'late_ops_frac': float(late_ops_frac), 'late_twoq_frac': float(late_twoq_frac), 'long_range_controlled_frac': float(long_range_controlled_frac), 'edge_use_gini': float(edge_use_gini), 'edge_use_cv': float(edge_use_cv),
         'parameterized_frac': float(parameterized_frac), 'unique_angles': float(unique_angles), 'angle_entropy': float(angle_entropy), 'abs_angle_mean': float(abs_angle_mean), 'abs_angle_std': float(abs_angle_std), 'theta_std': float(theta_std), 'phi_std': float(phi_std), 'lambda_std': float(lambda_std), 'small_angle_frac': float(small_angle_frac), 'power2pi_frac': float(power2pi_frac), 'angle_sign_balance': float(angle_sign_balance),
