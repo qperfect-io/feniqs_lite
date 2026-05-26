@@ -48,11 +48,13 @@ LOG_FILE = os.path.abspath(LOG_FILE)
 BACKEND_CONFIG = os.path.abspath(BACKEND_CONFIG)
 DATA_DIR = os.path.abspath(CURRENT_DIR)
 
+
 class FeniqsArgument(configargparse.ArgumentParser):
     """
     Custom ArgumentParser that includes additional attributes for arguments
     to be included in the interface and to mark secret arguments.
     """
+
     def add_argument(self, *args, **kwargs) -> configargparse.Action:
         include_in_interface = kwargs.pop("include_in_interface", True)
         is_secret = kwargs.pop("is_secret", False)
@@ -73,6 +75,7 @@ class FeniqsArgument(configargparse.ArgumentParser):
         Override the print_help method to call print_welcome_message() before displaying the help message.
         """
         super().print_help(file)
+
 
 def get_empty_argument_parser(add_help: bool = True) -> FeniqsArgument:
     """
@@ -95,6 +98,7 @@ def get_empty_argument_parser(add_help: bool = True) -> FeniqsArgument:
 
     return parser
 
+
 def set_options(parser: configargparse.ArgumentParser):
     """
     Define general and group-specific options for the parser.
@@ -111,7 +115,7 @@ def set_options(parser: configargparse.ArgumentParser):
     log_group = parser.add_argument_group("Logger's options")
     log_group.add_argument(
         "--logfile",
-        default=LOG_FILE, 
+        default=LOG_FILE,
         help="Path to log file. If not set, log will go to stderr.",
         metavar="<filename>",
         env_var="feniqs_LOGFILE",
@@ -137,7 +141,7 @@ def set_options(parser: configargparse.ArgumentParser):
         metavar="<path>",
         help="The folder to watch for modifications when running as a daemon.",
     )
-    
+
     # Enable or disable database usage (default: true)
     parser.add_argument(
         "--db",
@@ -181,6 +185,7 @@ def set_options(parser: configargparse.ArgumentParser):
         help="Number of runs for each benchmark. Default is 3 times.",
     )
 
+
 def parse_options(args=None) -> configargparse.Namespace:
     """
     Parse command-line options using the predefined parser settings.
@@ -190,6 +195,7 @@ def parse_options(args=None) -> configargparse.Namespace:
     parsed_opts = parser.parse_args(args=args)
     return parsed_opts
 
+
 def _is_package(path: str) -> bool:
     """
     Check if the given path is a Python package.
@@ -198,8 +204,3 @@ def _is_package(path: str) -> bool:
         os.path.isdir(path) and
         os.path.isfile(os.path.join(path, '__init__.py'))
     )
-
-
-
-
-

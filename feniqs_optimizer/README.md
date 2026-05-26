@@ -64,6 +64,11 @@ python feniqs_optimizer/run_optimizer.py --backend QiskitAerCpu \
                --gens 10 \
                --pop 10 \
                --num_eval 3
+
+python feniqs_optimizer/run_optimizer_recursive.py   --backend MimiqJuliaCpu \
+               --input data   --method cmaes   --gens 8   --pop 8   --num_eval 1  \
+               --output-dir results   --skip-missing-mirror
+
 ```
 List of possible backends: `QiskitAerCpu` (MPS),  `QmatchateaCpu` (MPS), `QuimbMpsCpu` (MPS), `MimiqJuliaCpu` (MPS).
 

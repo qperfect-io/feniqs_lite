@@ -1,3 +1,6 @@
+
+
+
 #
 # Copyright © 2024 QPerfect. All Rights Reserved.
 #
@@ -13,222 +16,299 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .abstract_config import SimulatorConfig
-from .abstract_julia_backend import AbstractJuliaBackend
-from .abstract_config import BasicConfig
+from __future__ import annotations
+
+import os
+import threading
+from collections import Counter
+from importlib.metadata import PackageNotFoundError, version
+from typing import Any, Dict, Optional
+
+import mimiqcircuits
+from mimiqcircuits import BitString
+from mimiqcircuits.qasm import load as load_qasm
+
 from .abstract_backend import AbstractBackend
-from juliacall import newmodule
-from random import randint
-import time
-import statistics
-import numpy as np
+from .abstract_config import SimulatorConfig
+from .abstract_simulator_backend import AbstractSimulatorBackend
 
-class MimiqJuliaCpuBackend(AbstractJuliaBackend):
-    _instance = None
 
-    def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            cls._instance = super(MimiqJuliaCpuBackend, cls).__new__(cls)
-        return cls._instance
+_MIMIQ_IMPORTS = None
+_MIMIQ_LOCK = threading.Lock()
 
-    def __init__(self, device_type='mps', env=None, bond_dimension=256, entdim=8,
-                 targerr=0.005, meth="mpo1z", opt_level=1, perm=False, **kwargs):
-        if not hasattr(self, 'initialized'):
-            kwargs['fusion_enable'] = False
 
-            config = SimulatorConfig(
-                device='Mimiq_Julia_Cpu',
-                device_type=device_type,
-                package_version='MAGIC_VERSION_NUMBER',
-                **kwargs
+def _get_mimiq_imports():
+    """
+    Lazy import of mimiqengines so the module is not imported at file load time.
+    This helps keep Julia initialization deferred until the backend is actually created.
+    """
+    global _MIMIQ_IMPORTS
+
+    if _MIMIQ_IMPORTS is not None:
+        return _MIMIQ_IMPORTS
+
+    with _MIMIQ_LOCK:
+        if _MIMIQ_IMPORTS is None:
+            from mimiqengines import MPSSimulator, StateVecSimulator
+            _MIMIQ_IMPORTS = (MPSSimulator, StateVecSimulator)
+
+    return _MIMIQ_IMPORTS
+
+
+_METHOD_MAP = {
+    "vmpoa": "VMPOA",
+    "vmpob": "VMPOB",
+    "dmpo": "DMPO",
+}
+
+_DEVICE_MAP = {
+    "mps": "mps",
+    "matrix_product_state": "mps",
+    "matrixproductstate": "mps",
+    "statevector": "statevector",
+    "state_vector": "statevector",
+    "state-vector": "statevector",
+    "sv": "statevector",
+}
+
+
+class MimiqJuliaCpuBackend(AbstractSimulatorBackend):
+    def __init__(
+        self,
+        device_type: str = "mps",
+        env: Optional[str] = None,
+        bond_dimension: int = 256,
+        entdim: int = 16,
+        targerr: float = 1e-10,
+        meth: str = "vmpoa",
+        opt_level: int = 1,
+        perm: bool = False,
+        traversal: str = "Sequential",
+        **kwargs,
+    ):
+        kwargs["fusion_enable"] = False
+
+        config = SimulatorConfig(
+            device="Mimiq_Julia_Cpu",
+            device_type=device_type,
+            package_version=self._safe_package_version("mimiqengines"),
+            **kwargs,
+        )
+        super().__init__(config)
+
+        self.env = env
+
+        self.add_config_attr("bond_dimension", int(bond_dimension))
+        self.add_config_attr("entdim", int(entdim))
+        self.add_config_attr("targerr", float(targerr))
+        self.add_config_attr("meth", str(meth))
+        self.add_config_attr("opt_level", int(opt_level))
+        self.add_config_attr("perm", bool(perm))
+        self.add_config_attr("traversal", str(traversal))
+        self.add_config_attr("runtime", "mimiqengines-python")
+        self.add_config_attr("mimiqcircuits_version", self._safe_package_version("mimiqcircuits"))
+
+        self._backend = None
+        self._circuit = None
+        self._has_measurements = False
+        self._results = None
+        self._last_samples = None
+        self._last_state = None
+        self._parsed_qasm_file = None
+
+        self.separates_execution_and_sampling = False
+        self.generate_backend()
+
+    @staticmethod
+    def _safe_package_version(package_name: str) -> str:
+        try:
+            return version(package_name)
+        except PackageNotFoundError:
+            return "unknown_version"
+
+    @staticmethod
+    def _normalize_device_type(device_type: str) -> str:
+        key = str(device_type).strip().lower().replace(" ", "_")
+        return _DEVICE_MAP.get(key, key)
+
+    @staticmethod
+    def _normalize_method(method: str) -> str:
+        key = str(method).strip().lower()
+        if key not in _METHOD_MAP:
+            valid = ", ".join(sorted(_METHOD_MAP))
+            raise ValueError(f"Unsupported MIMIQ method '{method}'. Expected one of: {valid}.")
+        return _METHOD_MAP[key]
+
+    @staticmethod
+    def _get_num_qubits(circuit) -> int:
+        for attr_name in ("num_qubits", "numqubits"):
+            attr = getattr(circuit, attr_name, None)
+            if callable(attr):
+                return int(attr())
+        raise AttributeError("Unable to determine the number of qubits for the MIMIQ circuit.")
+
+    @staticmethod
+    def _extract_fidelity(results: Any) -> Optional[float]:
+        fidelities = getattr(results, "fidelities", None)
+        if not fidelities:
+            return None
+        try:
+            return float(fidelities[0])
+        except (TypeError, ValueError, IndexError):
+            return None
+
+    @staticmethod
+    def _histogram_to_counts(histogram: Dict[Any, Any]) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for key, value in histogram.items():
+            if hasattr(key, "to01"):
+                bitstring = key.to01()
+            else:
+                bitstring = str(key)
+            counts[bitstring] = int(value)
+        return counts
+
+    def _build_sampling_counts_from_state(self, state) -> Dict[str, int]:
+        samples = state.sample(self.config.nb_shots, seed=self.config.seed)
+        return dict(Counter(sample.to01() for sample in samples))
+
+    @AbstractBackend._measure_time
+    def generate_backend(self):
+        normalized_device = self._normalize_device_type(self.config.device_type)
+
+        MPSSimulator, StateVecSimulator = _get_mimiq_imports()
+
+        if normalized_device == "statevector":
+            self._backend = StateVecSimulator()
+        elif normalized_device == "mps":
+            self._backend = MPSSimulator(
+                bonddim=int(self.config.bond_dimension),
+                entdim=int(self.config.entdim),
+                scut=float(self.config.targerr),
+                method=self._normalize_method(self.config.meth),
+                traversal=str(getattr(self.config, "traversal", "Sequential")),
+            )
+        else:
+            raise ValueError(
+                f"Unsupported Mimiq device_type '{self.config.device_type}'. "
+                "Use 'mps' or 'statevector'."
             )
 
-            super().__init__(julia_module_name="mimiq_julia", config=config)
-            self.env = "feniqs_lib/backends/plugins/venv/.mimiq_julia_cpu_env"
-            self.add_config_attr("bond_dimension", bond_dimension)
-            self.add_config_attr("entdim", entdim)
-            self.add_config_attr("targerr", targerr)
-            self.add_config_attr("meth", meth)
-            self.add_config_attr("opt_level", opt_level)
-            self.add_config_attr("perm", perm)
+        return self._backend
 
-            self.import_packages()
-            self.define_julia_functions()
+    def reconfigure(self, **kwargs):
+        """
+        Reuse the same Python/Julia session and rebuild only the low-level engine
+        when simulator parameters actually changed.
+        """
+        regenerate = False
 
-            if self.config.device_type == 'statevector':
-                self.config.package_version = self._get_julia_package_version("StateVecSim")
-            elif self.config.device_type == 'mps':
-                self.config.package_version = self._get_julia_package_version("MPSSim")
+        if "nb_shots" in kwargs:
+            self.config.nb_shots = int(kwargs["nb_shots"])
 
-            self.separates_execution_and_sampling = False
+        if "seed" in kwargs and kwargs["seed"] is not None:
+            self.config.seed = int(kwargs["seed"])
+
+        fields = {
+            "device_type": str,
+            "bond_dimension": int,
+            "entdim": int,
+            "targerr": float,
+            "meth": str,
+            "opt_level": int,
+            "perm": bool,
+            "traversal": str,
+        }
+
+        for name, cast in fields.items():
+            if name not in kwargs:
+                continue
+            new_value = cast(kwargs[name])
+            old_value = getattr(self.config, name, None)
+            if old_value != new_value:
+                setattr(self.config, name, new_value)
+                if name in {"device_type", "bond_dimension", "entdim", "targerr", "meth", "traversal"}:
+                    regenerate = True
+
+        if regenerate:
             self.generate_backend()
-            self.initialized = True
 
-    def import_packages(self):
-        # Import required Julia modules, including PythonCall
-        self.julia_module.seval("using MimiqCircuitsBase, QASMParsers, MPSSim, Random, PythonCall")
-        if self.config.device_type == 'mps':
-            self.julia_module.seval("using MPSSim")
-        elif self.config.device_type == 'statevector':
-            self.julia_module.seval("using StateVecSim")
+        return self
 
-    def generate_backend(self):
-        if self.config.device_type == 'statevector':
-            self.time_value = self.julia_module.seval("@elapsed qcs = StateVecQCS()")
-        elif self.config.device_type == 'mps':
-            options = ''
-            if self.config.bond_dimension or self.config.entdim:
-                options = ';'
-                if self.config.bond_dimension:
-                    options += f'bonddim={self.config.bond_dimension},'
-                if self.config.entdim:
-                    options += f'entdim={self.config.entdim},'
-                options = options[:-1]
-            self.time_value = self.julia_module.seval(f"@elapsed qcs = MPSSimulator({options})")
-
-    def define_julia_functions(self):
-        # Define Julia functions and ensure the global backend is defined.
-        self.julia_module.seval("""
-using QASMParsers
-using MimiqCircuitsBase
-using MPSSim
-using Random
-using PythonCall
-
-# Define default parameters and global backend
-global DEFAULT_PARAMS = Dict(
-    :bonddim => 256,
-    :entdim  => 16,
-    :nshots  => 1000,
-    :targerr => 0.0000000001,
-    :meth    => "mpo1z",
-    :opt_level => 1,
-    :iterations => nothing,
-    :max_iter   => 1e10,
-    :perm       => false
-)
-global backend = DEFAULT_PARAMS
-
-stringinterpret(str) = QASMParsers.Interpreters.interpret(QASMParsers.Parsers.parseopenqasm(str))
-
-function import_qasm1(qasmfile::String)
-    qasmstr = read(qasmfile, String)
-    return stringinterpret(qasmstr)
-end
-
-include("feniqs_lib/backends/quantum_backends/optimizer.jl")
-
-function compile(circ::MimiqCircuitsBase.Circuit; optimize::Bool=false, opt_level, reorderqubits::Bool=false, perm::Vector{Int}=Int[], kwargs...)
-    if optimize
-        if opt_level == 1
-            circ = compress(circ)
-        end
-        if reorderqubits
-            if isempty(perm)
-		println("ODERING")
-                params = merge(backend, kwargs)
-                circ, perm, dist = optimize_ordering(circ; params...)
-                return circ, perm
-            else
-                return reorder_qubits(circ, perm), perm
-            end
-        end
-    end
-    return circ, [1:length(circ)...]
-end
-
-function execute1(bonddim, entdim, targerr, meth, circ::MimiqCircuitsBase.Circuit; state=nothing)
-    sim = MPSSimulator(; bonddim=bonddim, entdim=entdim)
-    println("MIMIQ")
-    nqubits = MimiqCircuitsBase.numqubits(circ)
-    if isnothing(state)
-        state = zerostate(sim, nqubits, nqubits, 0)
-    end
-    ccirc = convertcircuit(sim, circ)
-    _, fid = evolve!(state, ccirc; targerr=targerr, meth=meth)
-    return state, fid
-end
-
-function execute_and_sample1(bonddim::Int, entdim::Int, targerr::Float64, meth::String,
-                               circ::MimiqCircuitsBase.Circuit, nshots::Int; state=nothing)
-    sim = MPSSimulator(; bonddim=bonddim, entdim=entdim)
-    nqubits = MimiqCircuitsBase.numqubits(circ)
-    println("Start compile")
-    circ, perm = compile(circ; opt_level=1)
-    println("End compile")
-    if isnothing(state)
-        state = zerostate(sim, nqubits, nqubits, 0)
-    end
-    ccirc = convertcircuit(sim, circ)
-    _, fid = evolve!(state, ccirc; targerr=targerr, meth=Symbol(meth))
-
-    samples = AbstractQCSs.sample(state.q, Random.GLOBAL_RNG, nshots)
-    return samples, fid
-end
-
-function get_mirror_fidelity(qasm_file::String, mirror_qasm_file::String, bonddim::Int,
-                             entdim::Int, targerr::Float64, meth::String)
-    qc = import_qasm1(qasm_file)
-    qc_mirror = import_qasm1(mirror_qasm_file)
-    qc, perm = compile(qc; opt_level=1)
-    qc_mirror, perm_mirror = compile(qc_mirror; opt_level=1)
-    state, fid1 = execute1(bonddim, entdim, targerr, meth, qc)
-    state, fid2 = execute1(bonddim, entdim, targerr, meth, qc_mirror, state=state)
-    nqubits = MimiqCircuitsBase.numqubits(qc)
-    zero_prob = abs2(amplitude(state.q, BitString(nqubits, 0)))
-    return zero_prob
-end
-        """)
-
+    @AbstractBackend._measure_time
     def parse(self):
-#        self.time_value = self.julia_module.seval(
-#            "@elapsed circuit = QASMParsers.Interpreters.interpret(QASMParsers.Parsers.parseopenqasm(qasm_str))"
-#        )
-       start = time.time()
-       # Import the QASM file and compile the circuit
-       circuit = self.julia_module.import_qasm1(self._qasm_file)
-       circuit, perm = self.julia_module.compile(circuit, opt_level=1, reorderqubits=False, optimize=True)
-       self.compiled_circuit = circuit
-       end = time.time()
-       self.time_value = end - start
-       
-       # Optionally, return the circuit if needed:
-       return circuit
-   
+        if self._circuit is not None and self._parsed_qasm_file == self._qasm_file:
+            return self._circuit
+
+        includedirs = [os.path.dirname(os.path.abspath(self._qasm_file))]
+        self._circuit = load_qasm(self._qasm_file, includedirs=includedirs)
+        self._parsed_qasm_file = self._qasm_file
+        self.config.nb_qubits = self._get_num_qubits(self._circuit)
+        self._has_measurements = "measure" in self._qasm_str.lower()
+        return self._circuit
+
+    @AbstractSimulatorBackend._measure_time
+    def execute_only(self):
+        if self._circuit is None:
+            raise ValueError("No MIMIQ circuit available. Call parse() before execute_only().")
+
+        if self._has_measurements:
+            self._results = self._backend.execute(
+                self._circuit,
+                self.config.nb_shots,
+                seed=self.config.seed,
+            )
+            self.fidelity = self._extract_fidelity(self._results)
+            self._last_samples = self._results.histogram()
+            self._last_state = None
+        else:
+            state, fidelity = self._backend.evolvezerostate(
+                self._circuit,
+                seed=self.config.seed,
+            )
+            self._last_state = state
+            self.fidelity = float(fidelity) if fidelity is not None else None
+            self._last_samples = self._build_sampling_counts_from_state(state)
+            self._results = None
+
+        return self._last_samples
+
+    @AbstractSimulatorBackend._measure_time
+    def sample_only(self):
+        if self._last_samples is None:
+            raise ValueError("No samples available. Call execute_only() first.")
+        return self._last_samples
+
+    @AbstractSimulatorBackend._measure_time
+    def execute_and_sample(self):
+        self.execute_only()
+        return self.sample_only()
+
     @AbstractBackend._measure_time
     def format_sample(self, samples):
-        # Customize sample formatting as needed.
-        res = {}
-        return res
+        if hasattr(samples, "histogram"):
+            histogram = samples.histogram()
+            counts = self._histogram_to_counts(histogram)
+        elif isinstance(samples, dict):
+            counts = self._histogram_to_counts(samples)
+        else:
+            counts = dict(Counter(str(sample) for sample in samples))
 
-    def execute_and_sample(self):
-        start = time.time()
-        #qc = self.julia_module.import_qasm1(self._qasm_file)
-        #qc, perm = self.julia_module.compile(qc, opt_level=1, reorderqubits=False, optimize=True)
-        samples, fid = self.julia_module.execute_and_sample1(
-            384,      # bond_dimension
-            4,       # entdim
-            0.0000000001,   # targerr
-            "zipup",  # meth
-            self.compiled_circuit, #qc,
-            1000
+        return counts
+
+    def get_mirror_fidelity(self, qasm_file, mirror_qasm_file):
+        circuit = load_qasm(qasm_file, includedirs=[os.path.dirname(os.path.abspath(qasm_file))])
+        mirror_circuit = load_qasm(
+            mirror_qasm_file,
+            includedirs=[os.path.dirname(os.path.abspath(mirror_qasm_file))],
         )
-        end = time.time()
-        self.time_value = end - start
-        return samples, fid
 
-    # def get_mirror_fidelity(self, qasm_file, mirror_qasm_file):
-    #     zero_prob = self.julia_module.get_mirror_fidelity(
-    #         qasm_file,
-    #         mirror_qasm_file,
-    #         64,   # bond_dimension
-    #         4,     # entdim
-    #         0.01, # targerr
-    #         "mpo1z" # meth
-            
-    #     )
-    #     return zero_prob
+        state, _ = self._backend.evolvezerostate(circuit, seed=self.config.seed)
+        state, _ = self._backend.evolve(state, mirror_circuit, seed=self.config.seed)
+
+        nq = self._get_num_qubits(circuit)
+        zero_prob = abs(state.amplitude(BitString("0" * nq))) ** 2
+        return float(zero_prob)
 
     def get_precision(self):
         return "double"
-

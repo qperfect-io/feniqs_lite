@@ -27,7 +27,7 @@ backends:
       entdim: [4, 8, 16]
       opt_level: [0, 1]
       scut: [1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]
-      meth: ["mpo1z", "zipup"]
+      meth: ["vmpoa", "dmpo"]
     optimization_params: ["bond_dimension", "entdim", "opt_level", "targerr", "meth"]
 
 

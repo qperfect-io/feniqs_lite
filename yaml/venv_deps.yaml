@@ -127,7 +127,7 @@ venv_description:
       - "mimiqcircuits @ git+https://github.com/qperfect-io/mimiqcircuits-python.git"
 
   qmatchatea_cpu:
-    install: true
+    install: false
     folder_name: .qmatchatea_cpu_env
     ignore_version: false
     dependencies:
@@ -204,25 +204,34 @@ venv_description:
       - Yao
       - PkgVersion
 
-
   mimiq_julia_cpu:
-    install: false
+    install: true
     folder_name: .mimiq_julia_cpu_env
     ignore_version: false
     dependencies:
       - numpy
-      - juliacall
-    julia_packages:
-      - BitBasis 
-      - StateVecSim
-      - QASMParsers
-      - LinearAlgebra
-      - AbstractQCSs
-      - MimiqCircuitsBase
-      - MPSSim
-      - PyCall
-      - PythonCall
-      - PkgVersion
+      - mimiqcircuits
+      - "/home/annaleonteva/Downloads/mimiqengines-python-main.zip"
+
+
+#  mimiq_julia_cpu:
+#    install: true
+#    folder_name: .mimiq_julia_cpu_env
+#    ignore_version: false
+#    dependencies:
+#      - numpy
+#      - juliacall
+#    julia_packages:
+#      - BitBasis 
+#      - StateVecSim
+#      - QASMParsers
+#      - LinearAlgebra
+#      - AbstractQCSs
+#      - MimiqCircuitsBase
+#      - MPSSim
+#      - PyCall
+#      - PythonCall
+#      - PkgVersion
   
 
 

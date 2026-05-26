@@ -19,7 +19,6 @@ import time
 import json
 import logging
 import signal
-import csv
 import yaml
 import errno
 import psutil
