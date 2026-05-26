@@ -200,6 +200,6 @@ class QiskitAerGpu(QiskitSimulatorAbstractBackend):
             self._run_options['use_cuTensorNet_autotuning'] = use_cuTensorNet_autotuning
 
         self._run_options["cuStateVec_enable"] = True
-        self._run_options = {'device': 'GPU'}
+        self._run_options["device"] = "GPU"
    
         self._backend = self.generate_backend()
