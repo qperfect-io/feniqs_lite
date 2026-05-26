@@ -56,9 +56,9 @@ def _get_mimiq_imports():
 
 
 _METHOD_MAP = {
-    "mpo1z": "MPO1z",
-    "mpo2z": "MPO2z",
-    "zipup": "ZipUp",
+    "vmpoa": "VMPOA",
+    "vmpob": "VMPOB",
+    "dmpo": "DMPO",
 }
 
 _DEVICE_MAP = {
@@ -80,7 +80,7 @@ class MimiqJuliaCpuBackend(AbstractSimulatorBackend):
         bond_dimension: int = 256,
         entdim: int = 16,
         targerr: float = 1e-10,
-        meth: str = "mpo1z",
+        meth: str = "vmpoa",
         opt_level: int = 1,
         perm: bool = False,
         traversal: str = "Sequential",
